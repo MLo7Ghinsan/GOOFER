@@ -1,2 +1,1 @@
-# GOOFER
-An attempt to Source Filter modeling
+# This is a work in progress
