@@ -9,14 +9,14 @@ import time
 start_time = time.time()
 
 # params
-uv_strength = 1 # Unvoiced noise level
-breath_strength = 0.075 # Breathiness in voiced speech
+uv_strength = 0.2 # Unvoiced noise level
+breath_strength = 0.05 # Breathiness in voiced speech
 voicing_threshold = 25 # Hz (above this = voiced)
 
 start_sec = None #0.3
 end_sec = None #0.4
 stretch_factor = 1.0
-pitch_shift = 0.2
+pitch_shift = 1.0
 formant_shift = 1.0
 
 # Im using small af n_fft and hop_length cus bigger is questionable
@@ -148,6 +148,14 @@ def shift_formants(env, shift_ratio, sr):
         interp_func = interp1d(freqs, env[:, t], kind='linear', fill_value='extrapolate')
         interp_env[:, t] = interp_func(warped_freqs)
     return interp_env
+
+def match_env_frames(env, target_frames):
+    if env.shape[1] > target_frames:
+        return env[:, :target_frames]
+    elif env.shape[1] < target_frames:
+        pad_width = target_frames - env.shape[1]
+        return np.pad(env, ((0, 0), (0, pad_width)), mode='edge')
+    return env
 
 print('Spectral Envelope Estimation:')
 # Spectral envelope
@@ -314,57 +322,75 @@ if apply_brightness:
     S_harm[:, :voiced_frames.size] = harm_voiced
 harmonic = istft(S_harm, hop_length=hop_length, window=window, length=len(y))
 
-if normalize:
-    harmonic /= np.max(np.abs(harmonic) + 1e-6)
 log_time('    ISTFT')
 
 print('Aperiodic Synthesis:')
-# aperiodic Synth (filtered white noise)
-white = np.random.randn(len(y))
-white /= np.max(np.abs(white) + 1e-6)
-filtered_white = medfilt(white, kernel_size=5)
-filtered_white = gaussian_filter1d(filtered_white, sigma=1.0)
-S_noise = stft(filtered_white, n_fft=n_fft, hop_length=hop_length, window=window)
-if env_spec4breathiness.shape[1] > S_noise.shape[1]:
-    env_spec4breathiness = env_spec4breathiness[:, :S_noise.shape[1]]
-elif env_spec4breathiness.shape[1] < S_noise.shape[1]:
-    pad_width = S_noise.shape[1] - env_spec4breathiness.shape[1]
-    env_spec4breathiness = np.pad(env_spec4breathiness, ((0, 0), (0, pad_width)), mode='edge')
-log_time('    STFT')
-mag_noise = np.abs(S_noise) + 1e-8
-S_aper = (S_noise / mag_noise) * env_spec4breathiness
+# Voiced (breath) noise
+white_breath = np.random.randn(len(y))
+white_breath /= np.max(np.abs(white_breath) + 1e-6)
+filtered_breath = gaussian_filter1d(medfilt(white_breath, kernel_size=5), sigma=1.0)
+S_breath = stft(filtered_breath, n_fft=n_fft, hop_length=hop_length, window=window)
+
+# Unvoiced (fricative) noise
+white_uv = np.random.randn(len(y))
+white_uv /= np.max(np.abs(white_uv) + 1e-6)
+filtered_uv = gaussian_filter1d(medfilt(white_uv, kernel_size=5), sigma=1.0)
+S_uv = stft(filtered_uv, n_fft=n_fft, hop_length=hop_length, window=window)
+
+log_time('    STFT (breath + uv)')
+
+env_breath = match_env_frames(env_spec4breathiness, S_breath.shape[1])
+env_uv = match_env_frames(env_spec4breathiness, S_uv.shape[1])
+
+mag_breath = np.abs(S_breath) + 1e-8
+S_breath = (S_breath / mag_breath) * env_breath
+
+mag_uv = np.abs(S_uv) + 1e-8
+S_uv = (S_uv / mag_uv) * env_uv
 
 if apply_brightness:
-    brightness_curve = create_brightness_curve(S_aper.shape[0], sr, 3500, 5000, gain_db=20.0)
+    brightness_curve = create_brightness_curve(S_breath.shape[0], sr, 3500, 5000, gain_db=20.0)
     voiced_frames = voicing_mask[::hop_length]
-    if voiced_frames.size < S_aper.shape[1]:
-        voiced_frames = np.pad(voiced_frames, (0, S_aper.shape[1] - voiced_frames.size), mode='edge')
+    if voiced_frames.size < S_breath.shape[1]:
+        voiced_frames = np.pad(voiced_frames, (0, S_breath.shape[1] - voiced_frames.size), mode='edge')
     else:
-        voiced_frames = voiced_frames[:S_aper.shape[1]]
-    aper_voiced = S_aper[:, :voiced_frames.size].copy()
-    aper_voiced[:, voiced_frames > 0] *= brightness_curve
-    aper_voiced[:, voiced_frames > 0] = gaussian_filter(aper_voiced[:, voiced_frames > 0], sigma=(0.5, 0))
-    S_aper[:, :voiced_frames.size] = aper_voiced
-aper = istft(S_aper, hop_length=hop_length, window=window, length=len(y))
-log_time(f'    ISTFT')
+        voiced_frames = voiced_frames[:S_breath.shape[1]]
 
-# Gain Control (Breathiness vs Unvoiced) --- (needs work)
+    breath_voiced = S_breath[:, :voiced_frames.size].copy()
+    breath_voiced[:, voiced_frames > 0] *= brightness_curve
+    breath_voiced[:, voiced_frames > 0] = gaussian_filter(breath_voiced[:, voiced_frames > 0], sigma=(0.5, 0))
+    S_breath[:, :voiced_frames.size] = breath_voiced
+
+    uv_unvoiced = S_uv[:, :voiced_frames.size].copy()
+    uv_unvoiced[:, voiced_frames <= 0] *= brightness_curve
+    uv_unvoiced[:, voiced_frames <= 0] = gaussian_filter(uv_unvoiced[:, voiced_frames <= 0], sigma=(0.5, 0))
+    S_uv[:, :voiced_frames.size] = uv_unvoiced
+
+aper_breath = istft(S_breath, hop_length=hop_length, window=window, length=len(y))
+aper_uv = istft(S_uv, hop_length=hop_length, window=window, length=len(y))
+
+log_time('    ISTFT (breath + uv)')
+
+# Gain Control (Breathiness vs Unvoiced)
 voicing_mask_smooth = gaussian_filter1d(voicing_mask, sigma=20)
-voiced_gain = voicing_mask_smooth * breath_strength
-unvoiced_gain = (1.0 - voicing_mask_smooth) * uv_strength
-aper_voiced = aper * voiced_gain
-aper_unvoiced = aper * unvoiced_gain
-aper = aper_voiced + aper_unvoiced
-if normalize:
-    aper /= np.max(np.abs(aper) + 1e-6)
+breathy_aper = aper_breath * voicing_mask_smooth * breath_strength
+noisy_aper = aper_uv * (1.0 - voicing_mask_smooth) * uv_strength
+aper_uv = noisy_aper
+aper_bre = breathy_aper
 
 # sLAy!!!
-harmonic_wav, aperiodic_wav, reconstruct_wav = f'{input_name}_harmonics.wav', f'{input_name}_aperiodic.wav', f'{input_name}_reconstruct.wav'
+harmonic_wav, breath_wav, unvoiced_wav, reconstruct_wav = f'{input_name}_harmonics.wav', f'{input_name}_breathiness.wav', f'{input_name}_unvoiced.wav', f'{input_name}_reconstruct.wav'
+
+reconstruct = harmonic + aper_uv + aper_bre
+
+if normalize:
+    reconstruct /= np.max(np.abs(reconstruct) + 1e-6)
 
 if save_features_wav:
     sf.write(harmonic_wav, harmonic, sr)
-    sf.write(aperiodic_wav, aper, sr)
-    print(f'Files saved: {harmonic_wav} + {aperiodic_wav}')
+    sf.write(breath_wav, aper_bre, sr)
+    sf.write(unvoiced_wav, aper_uv, sr)
+    print(f'Files saved: {harmonic_wav} + {breath_wav} + {unvoiced_wav}')
 
-sf.write(reconstruct_wav, harmonic + aper, sr)
+sf.write(reconstruct_wav, reconstruct, sr)
 print(f'Reconstructed audio saved: {reconstruct_wav}')
