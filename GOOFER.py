@@ -31,7 +31,7 @@ f0_merge_range = 10
 apply_brightness = True
 normalize = True
 save_features_wav = True
-input_file = 'test_reference.wav' # test file lmao
+input_file = 'toy.wav' # test file lmao
 input_name = os.path.splitext(input_file)[0]
 y, sr = sf.read(input_file)
 if y.ndim > 1:
@@ -164,12 +164,16 @@ print('Spectral Envelope Estimation:')
 S_orig = stft(y, n_fft=n_fft, hop_length=hop_length, window=window)
 log_time('    STFT')
 mag = np.abs(S_orig) + 1e-8
-log_mag = np.log(mag)
-ceps = np.fft.ifft(log_mag, axis=0)
-n_ceps = 100 # lesser value makes it loses 'characteristic', initially 50 but it doesnt have enough quality
-ceps[n_ceps:-n_ceps, :] = 0
-env_spec = np.fft.fft(ceps, axis=0).real
-env_spec = np.exp(gaussian_filter1d(env_spec, sigma=3.0, axis=1))
+#log_mag = np.log(mag)
+#ceps = np.fft.ifft(log_mag, axis=0)
+#n_ceps = 100 # lesser value makes it loses 'characteristic', initially 50 but it doesnt have enough quality
+#ceps[n_ceps:-n_ceps, :] = 0
+#env_spec = np.fft.fft(ceps, axis=0).real
+#env_spec = np.exp(env_spec)
+
+# try skipping
+env_spec = mag
+
 env_spec4breathiness = gaussian_filter1d(env_spec, sigma=1.75, axis=0)
 
 if formant_shift != 1.0:
