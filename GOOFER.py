@@ -283,7 +283,7 @@ for i in range(len(f0_interp)):
         end = min(len(pulse), start + len(lf_pulse))
         pulse[start:end] += lf_pulse[:end - start]
         phase -= 1.0
-pulse /= np.max(np.abs(pulse) + 1e-6)
+#pulse /= np.max(np.abs(pulse) + 1e-6)
 
 log_time('    Generation')
 
@@ -327,15 +327,14 @@ log_time('    ISTFT')
 print('Aperiodic Synthesis:')
 # Voiced (breath) noise
 white_breath = np.random.randn(len(y))
-white_breath /= np.max(np.abs(white_breath) + 1e-6)
+#white_breath /= np.max(np.abs(white_breath) + 1e-6)
 filtered_breath = gaussian_filter1d(medfilt(white_breath, kernel_size=5), sigma=1.0)
 S_breath = stft(filtered_breath, n_fft=n_fft, hop_length=hop_length, window=window)
 
 # Unvoiced (fricative) noise
 white_uv = np.random.randn(len(y))
-white_uv /= np.max(np.abs(white_uv) + 1e-6)
-filtered_uv = gaussian_filter1d(medfilt(white_uv, kernel_size=5), sigma=1.0)
-S_uv = stft(filtered_uv, n_fft=n_fft, hop_length=hop_length, window=window)
+#white_uv /= np.max(np.abs(white_uv) + 1e-6)
+S_uv = stft(white_uv, n_fft=n_fft, hop_length=hop_length, window=window)
 
 log_time('    STFT (breath + uv)')
 
