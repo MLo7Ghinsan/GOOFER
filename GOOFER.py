@@ -9,8 +9,8 @@ import time
 start_time = time.time()
 
 # params
-uv_strength = 0.2 # Unvoiced noise level
-breath_strength = 0.05 # Breathiness in voiced speech
+uv_strength = 0.5 # Unvoiced noise level
+breath_strength = 0.0375 # Breathiness in voiced speech
 voicing_threshold = 25 # Hz (above this = voiced)
 
 start_sec = None #0.3
@@ -360,10 +360,10 @@ if apply_brightness:
     breath_voiced[:, voiced_frames > 0] = gaussian_filter(breath_voiced[:, voiced_frames > 0], sigma=(0.5, 0))
     S_breath[:, :voiced_frames.size] = breath_voiced
 
-    uv_unvoiced = S_uv[:, :voiced_frames.size].copy()
-    uv_unvoiced[:, voiced_frames <= 0] *= brightness_curve
-    uv_unvoiced[:, voiced_frames <= 0] = gaussian_filter(uv_unvoiced[:, voiced_frames <= 0], sigma=(0.5, 0))
-    S_uv[:, :voiced_frames.size] = uv_unvoiced
+    #uv_unvoiced = S_uv[:, :voiced_frames.size].copy()
+    #uv_unvoiced[:, voiced_frames <= 0] *= brightness_curve
+    #uv_unvoiced[:, voiced_frames <= 0] = gaussian_filter(uv_unvoiced[:, voiced_frames <= 0], sigma=(0.5, 0))
+    #S_uv[:, :voiced_frames.size] = uv_unvoiced
 
 aper_breath = istft(S_breath, hop_length=hop_length, window=window, length=len(y))
 aper_uv = istft(S_uv, hop_length=hop_length, window=window, length=len(y))
