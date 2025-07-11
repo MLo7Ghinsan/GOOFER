@@ -18,8 +18,13 @@ voicing_threshold = 25 # Hz (above this = voiced)
 start_sec = None #0.3
 end_sec = None #0.4
 stretch_factor = 1.0
+
 pitch_shift = 1.0
+
 formant_shift = 1.0
+
+add_subharm = False
+subharm_weight = 0.5
 
 # Im using small af n_fft and hop_length cus bigger is questionable
 n_fft = 2048 // 4
@@ -31,7 +36,9 @@ f0_merge_range = 10
 apply_brightness = True
 normalize = True
 save_features_wav = True
-input_file = 'toy.wav' # test file lmao
+
+input_file = 'input.wav' # test file lmao
+
 input_name = os.path.splitext(input_file)[0]
 y, sr = sf.read(input_file)
 if y.ndim > 1:
@@ -291,6 +298,30 @@ for i in range(len(f0_interp)):
         end = min(len(pulse), start + len(lf_pulse))
         pulse[start:end] += lf_pulse[:end - start]
         phase -= 1.0
+
+if add_subharm:
+    sub_pulse = np.zeros_like(f0_interp)
+    phase = 0.0
+    for i in range(len(f0_interp)):
+        f0 = f0_interp[i]
+        if f0 > 0:
+            last_f0 = f0
+        T = 2.0 / last_f0 # 1 octave below
+        phase += f0_interp[i] / (sr * 2.0)
+
+        if phase >= 1.0:
+            key = f'{last_f0:.2f}_sub1oct'
+            if key not in pulse_cache:
+                pulse_cache[key] = lf_model_pulse(T, Ra=0.02, Rg=1.7, Rk=1, sr=sr)
+            lf_pulse = pulse_cache[key]
+            start = i
+            end = min(len(sub_pulse), start + len(lf_pulse))
+            sub_pulse[start:end] += lf_pulse[:end - start]
+            phase -= 1.0
+
+    sub_pulse /= np.max(np.abs(sub_pulse) + 1e-6)
+    pulse += subharm_weight * sub_pulse
+
 pulse /= np.max(np.abs(pulse) + 1e-6)
 
 log_time('    Generation')
