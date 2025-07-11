@@ -8,6 +8,8 @@ from scipy.signal import medfilt
 import time
 start_time = time.time()
 
+test = False
+
 # params
 uv_strength = 0.5 # Unvoiced noise level
 breath_strength = 0.0375 # Breathiness in voiced speech
@@ -29,7 +31,7 @@ f0_merge_range = 10
 apply_brightness = True
 normalize = True
 save_features_wav = True
-input_file = 'input.wav' # test file lmao
+input_file = 'test_reference.wav' # test file lmao
 input_name = os.path.splitext(input_file)[0]
 y, sr = sf.read(input_file)
 if y.ndim > 1:
@@ -91,7 +93,7 @@ def fix_f0_gaps(f0_array, max_gap=10):
             i += 1
     return f0_fixed
 
-def lf_model_pulse(T, Ra=0.01, Rg=1.47, Rk=0.34, sr=16000):
+def lf_model_pulse(T, Ra=0.01, Rg=1.47, Rk=0.34, sr=44100):
     t = np.linspace(0, T, int(sr * T), endpoint=False)
     Ee = 1.0
     Ta = Ra * T
@@ -239,24 +241,26 @@ if stretch_factor != 1.0:
     else:
         y = y[:new_len]
 
-### test synthesis f0 edit
-#constant_f0 = 750
-#vibrato_rate = 5.5     # Hz
-#vibrato_depth = 20   # Hz
-#vibrato_delay = 1.0    # seconds before vibrato starts
-#vibrato_ramp_time = 7  # seconds to reach full depth
+if test:
+    ### test synthesis f0 edit
+    constant_f0 = 120
+    vibrato_rate = 5.5     # Hz
+    vibrato_depth = 20   # Hz
+    vibrato_delay = 1.0    # seconds before vibrato starts
+    vibrato_ramp_time = 7  # seconds to reach full depth
 
-#t = np.linspace(0, len(f0_interp) / sr, num=len(f0_interp))
-#f0_interp[:] = constant_f0
-#vibrato_envelope = np.zeros_like(t)
-#ramp_start = vibrato_delay
-#ramp_end = ramp_start + vibrato_ramp_time
-#ramp_mask = (t >= ramp_start) & (t <= ramp_end)
-#vibrato_envelope[ramp_mask] = (t[ramp_mask] - ramp_start) / (ramp_end - ramp_start)
-#vibrato_envelope[t > ramp_end] = 1.0
-#vibrato_envelope = vibrato_envelope**2  # makes the wobble glide in instead of snap
-#f0_interp += np.sin(2 * np.pi * vibrato_rate * t) * vibrato_depth * vibrato_envelope
-###
+    t = np.linspace(0, len(f0_interp) / sr, num=len(f0_interp))
+    voiced_mask = f0_interp > voicing_threshold
+    f0_interp[voiced_mask] = constant_f0
+    vibrato_envelope = np.zeros_like(t)
+    ramp_start = vibrato_delay
+    ramp_end = ramp_start + vibrato_ramp_time
+    ramp_mask = (t >= ramp_start) & (t <= ramp_end)
+    vibrato_envelope[ramp_mask] = (t[ramp_mask] - ramp_start) / (ramp_end - ramp_start)
+    vibrato_envelope[t > ramp_end] = 1.0
+    vibrato_envelope = vibrato_envelope**2  # makes the wobble glide in instead of snap
+    f0_interp += np.sin(2 * np.pi * vibrato_rate * t) * vibrato_depth * vibrato_envelope
+    ###
 
 log_time('    PYin')
 
@@ -283,7 +287,7 @@ for i in range(len(f0_interp)):
         end = min(len(pulse), start + len(lf_pulse))
         pulse[start:end] += lf_pulse[:end - start]
         phase -= 1.0
-#pulse /= np.max(np.abs(pulse) + 1e-6)
+pulse /= np.max(np.abs(pulse) + 1e-6)
 
 log_time('    Generation')
 
@@ -327,13 +331,13 @@ log_time('    ISTFT')
 print('Aperiodic Synthesis:')
 # Voiced (breath) noise
 white_breath = np.random.randn(len(y))
-#white_breath /= np.max(np.abs(white_breath) + 1e-6)
+white_breath /= np.max(np.abs(white_breath) + 1e-6)
 filtered_breath = gaussian_filter1d(medfilt(white_breath, kernel_size=5), sigma=1.0)
 S_breath = stft(filtered_breath, n_fft=n_fft, hop_length=hop_length, window=window)
 
 # Unvoiced (fricative) noise
 white_uv = np.random.randn(len(y))
-#white_uv /= np.max(np.abs(white_uv) + 1e-6)
+white_uv /= np.max(np.abs(white_uv) + 1e-6)
 S_uv = stft(white_uv, n_fft=n_fft, hop_length=hop_length, window=window)
 
 log_time('    STFT (breath + uv)')
@@ -380,10 +384,17 @@ aper_bre = breathy_aper
 # sLAy!!!
 harmonic_wav, breath_wav, unvoiced_wav, reconstruct_wav = f'{input_name}_harmonics.wav', f'{input_name}_breathiness.wav', f'{input_name}_unvoiced.wav', f'{input_name}_reconstruct.wav'
 
-reconstruct = harmonic + aper_uv + aper_bre
+combined = harmonic + aper_uv + aper_bre
 
 if normalize:
-    reconstruct /= np.max(np.abs(reconstruct) + 1e-6)
+    peak = np.max(np.abs(combined) + 1e-6)
+    gain = 1.0 / peak
+    harmonic *= gain
+    aper_uv *= gain
+    aper_bre *= gain
+    reconstruct = combined * gain
+else:
+    reconstruct = combined
 
 if save_features_wav:
     sf.write(harmonic_wav, harmonic, sr)
