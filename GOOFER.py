@@ -47,11 +47,24 @@ normalize = True
 save_features_wav = True
 
 input_file = 'input.wav' # test file lmao
+input_file2 = None
+morph_strength = 0.0 # 0.0 = only first audio, 1.0 = only second audio
 
 input_name = os.path.splitext(input_file)[0]
 y, sr = sf.read(input_file)
 if y.ndim > 1:
     y = y.mean(axis=1)
+
+second_audio_available = False
+if input_file2 and os.path.isfile(input_file2) and os.path.getsize(input_file2) > 0:
+    y2, sr2 = sf.read(input_file2)
+    if y2.ndim > 1:
+        y2 = y2.mean(axis=1)
+    if sr2 != sr:
+        raise ValueError('Second audio must have the same sample rate as the first')
+    second_audio_available = True
+else:
+    y2 = None
 
 # tools
 current_time = time.time()
@@ -215,6 +228,20 @@ env_spec4breathiness = gaussian_filter1d(env_spec, sigma=1.75, axis=0)
 
 if formant_shift != 1.0:
     env_spec = shift_formants(env_spec, formant_shift, sr)
+
+# envelope morphing with second audio (if any)
+if second_audio_available:
+    S_morph = stft(y2, n_fft=n_fft, hop_length=hop_length, window=window)
+    mag_morph = np.abs(S_morph) + 1e-8
+    env_morph = mag_morph
+    env_morph4breath = gaussian_filter1d(env_morph, sigma=1.75, axis=0)
+
+    env_morph = match_env_frames(env_morph, env_spec.shape[1])
+    env_morph4breath = match_env_frames(env_morph4breath, env_spec4breathiness.shape[1])
+
+    env_spec = env_spec * (1.0 - morph_strength) + env_morph * morph_strength
+    env_spec4breathiness = (env_spec4breathiness * (1.0 - morph_strength) + env_morph4breath * morph_strength)
+    log_time('    Morph envelope')
 
 log_time('    Envelope filter')
 
