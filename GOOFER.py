@@ -23,7 +23,7 @@ pitch_shift = 1.0
 
 formant_shift = 1.0
 
-add_subharm = False
+add_subharm = True
 subharm_weight = 0.5
 
 # Im using small af n_fft and hop_length cus bigger is questionable
@@ -165,6 +165,17 @@ def match_env_frames(env, target_frames):
         pad_width = target_frames - env.shape[1]
         return np.pad(env, ((0, 0), (0, pad_width)), mode='edge')
     return env
+
+def create_volume_jitter(length, sr, speed=30.0, strength=0.5, seed=None):
+    #noise modulato... Band-limit it (like dirty LFO)
+    if seed is not None:
+        np.random.seed(seed)
+    t = np.linspace(0, length / sr, num=length)
+    noise = np.random.randn(len(t))
+    noise = gaussian_filter1d(noise, sigma=sr / (speed * 6))
+    noise /= np.max(np.abs(noise) + 1e-6)
+    envelope = 1.0 + noise * strength
+    return envelope
 
 print('Spectral Envelope Estimation:')
 # Spectral envelope
@@ -415,6 +426,13 @@ breathy_aper = aper_breath * voicing_mask_smooth * breath_strength
 noisy_aper = aper_uv * (1.0 - voicing_mask_smooth) * uv_strength
 aper_uv = noisy_aper
 aper_bre = breathy_aper
+
+# the volume jitter thing
+harmonic_jitter = create_volume_jitter(len(harmonic), sr, speed=150.0, strength=100)
+breathy_jitter = create_volume_jitter(len(aper_bre), sr, speed=150.0, strength=100)
+voicing_jitter_mask = gaussian_filter1d(voicing_mask, sigma=20)
+harmonic *= 1.0 + (harmonic_jitter - 1.0) * voicing_jitter_mask
+aper_bre *= 1.0 + (breathy_jitter - 1.0) * voicing_jitter_mask
 
 # sLAy!!!
 harmonic_wav, breath_wav, unvoiced_wav, reconstruct_wav = f'{input_name}_harmonics.wav', f'{input_name}_breathiness.wav', f'{input_name}_unvoiced.wav', f'{input_name}_reconstruct.wav'
