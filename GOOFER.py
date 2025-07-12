@@ -23,9 +23,17 @@ pitch_shift = 1.0
 
 formant_shift = 1.0
 
-add_subharm = True
-volume_jitter = True
+volume_jitter = False #only on voiced
+volume_jitter_speed = 150
+volume_jitter_strength_harm = 50
+volume_jitter_strength_breath = 100
+
+add_subharm = False
 subharm_weight = 0.5
+
+f0_jitter = False
+f0_jitter_speed = 100
+f0_jitter_strength =1.5
 
 # Im using small af n_fft and hop_length cus bigger is questionable
 n_fft = 2048 // 4
@@ -178,6 +186,16 @@ def create_volume_jitter(length, sr, speed=30.0, strength=0.5, seed=None):
     envelope = 1.0 + noise * strength
     return envelope
 
+def apply_f0_jitter(f0_array, sr, speed=40.0, strength=0.04, seed=None):
+    if seed is not None:
+        np.random.seed(seed)
+    t = np.linspace(0, len(f0_array) / sr, num=len(f0_array))
+    noise = np.random.randn(len(t))
+    noise = gaussian_filter1d(noise, sigma=sr / (speed * 6))
+    noise /= np.max(np.abs(noise) + 1e-6)
+    jitter = 1.0 + noise * strength
+    return jitter
+
 print('Spectral Envelope Estimation:')
 # Spectral envelope
 S_orig = stft(y, n_fft=n_fft, hop_length=hop_length, window=window)
@@ -284,6 +302,10 @@ if test:
     vibrato_envelope = vibrato_envelope**2  # makes the wobble glide in instead of snap
     f0_interp += np.sin(2 * np.pi * vibrato_rate * t) * vibrato_depth * vibrato_envelope
     ###
+
+if f0_jitter:
+    f0_jitter = apply_f0_jitter(f0_interp, sr, speed=f0_jitter_speed, strength=f0_jitter_strength)
+    f0_interp *= 1.0 + ((f0_jitter - 1.0) * voicing_mask)
 
 log_time('    PYin')
 
@@ -430,8 +452,8 @@ aper_bre = breathy_aper
 
 if volume_jitter:
 # the volume jitter thing
-    harmonic_jitter = create_volume_jitter(len(harmonic), sr, speed=150.0, strength=100)
-    breathy_jitter = create_volume_jitter(len(aper_bre), sr, speed=150.0, strength=100)
+    harmonic_jitter = create_volume_jitter(len(harmonic), sr, speed=volume_jitter_speed, strength=volume_jitter_strength_harm)
+    breathy_jitter = create_volume_jitter(len(aper_bre), sr, speed=volume_jitter_speed, strength=volume_jitter_strength_breath)
     voicing_jitter_mask = gaussian_filter1d(voicing_mask, sigma=20)
     harmonic *= 1.0 + (harmonic_jitter - 1.0) * voicing_jitter_mask
     aper_bre *= 1.0 + (breathy_jitter - 1.0) * voicing_jitter_mask
