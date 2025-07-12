@@ -24,6 +24,7 @@ pitch_shift = 1.0
 formant_shift = 1.0
 
 add_subharm = True
+volume_jitter = True
 subharm_weight = 0.5
 
 # Im using small af n_fft and hop_length cus bigger is questionable
@@ -427,12 +428,13 @@ noisy_aper = aper_uv * (1.0 - voicing_mask_smooth) * uv_strength
 aper_uv = noisy_aper
 aper_bre = breathy_aper
 
+if volume_jitter:
 # the volume jitter thing
-harmonic_jitter = create_volume_jitter(len(harmonic), sr, speed=150.0, strength=100)
-breathy_jitter = create_volume_jitter(len(aper_bre), sr, speed=150.0, strength=100)
-voicing_jitter_mask = gaussian_filter1d(voicing_mask, sigma=20)
-harmonic *= 1.0 + (harmonic_jitter - 1.0) * voicing_jitter_mask
-aper_bre *= 1.0 + (breathy_jitter - 1.0) * voicing_jitter_mask
+    harmonic_jitter = create_volume_jitter(len(harmonic), sr, speed=150.0, strength=100)
+    breathy_jitter = create_volume_jitter(len(aper_bre), sr, speed=150.0, strength=100)
+    voicing_jitter_mask = gaussian_filter1d(voicing_mask, sigma=20)
+    harmonic *= 1.0 + (harmonic_jitter - 1.0) * voicing_jitter_mask
+    aper_bre *= 1.0 + (breathy_jitter - 1.0) * voicing_jitter_mask
 
 # sLAy!!!
 harmonic_wav, breath_wav, unvoiced_wav, reconstruct_wav = f'{input_name}_harmonics.wav', f'{input_name}_breathiness.wav', f'{input_name}_unvoiced.wav', f'{input_name}_reconstruct.wav'
