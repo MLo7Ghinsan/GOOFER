@@ -23,6 +23,12 @@ pitch_shift = 1.0
 
 formant_shift = 1.0
 
+individual_formant_shift = False
+F1 = 1.0
+F2 = 1.0
+F3 = 1.0
+F4 = 1.0
+
 volume_jitter = False #only on voiced
 volume_jitter_speed = 150
 volume_jitter_strength_harm = 50
@@ -209,6 +215,65 @@ def apply_f0_jitter(f0_array, sr, speed=40.0, strength=0.04, seed=None):
     jitter = 1.0 + noise * strength
     return jitter
 
+def extract_formants(y, sr, hop_length, max_formants=5, target_frames=None):
+    snd = parselmouth.Sound(y, sr)
+    formant_obj = snd.to_formant_burg(time_step=hop_length / sr, max_number_of_formants=max_formants)
+    num_frames = formant_obj.get_number_of_frames()
+    formant_tracks = {i: [] for i in range(1, max_formants + 1)}
+
+    for frame_idx in range(num_frames):
+        t = formant_obj.get_time_from_frame_number(frame_idx + 1)
+        for formant_num in range(1, max_formants + 1):
+            try:
+                f = formant_obj.get_value_at_time(formant_num, t)
+                formant_tracks[formant_num].append(f if f is not None else 0.0)
+            except:
+                formant_tracks[formant_num].append(0.0)
+
+    # Pad to match env_spec frames
+    if target_frames is not None:
+        for i in formant_tracks:
+            diff = target_frames - len(formant_tracks[i])
+            if diff > 0:
+                formant_tracks[i].extend([0.0] * diff)
+            else:
+                formant_tracks[i] = formant_tracks[i][:target_frames]
+
+    return formant_tracks
+
+def transpose_formants(formant_tracks, shift_ratios):
+    transposed = {}
+    for i, track in formant_tracks.items():
+        ratio = shift_ratios.get(i, 1.0)
+        transposed[i] = np.array(track) * ratio
+    return transposed
+
+def warp_env_by_formants(env, orig_formants, shifted_formants, sr):
+    n_bins, n_frames = env.shape
+    freqs = np.linspace(0, sr / 2, n_bins)
+    warped_env = np.zeros_like(env)
+
+    for t in range(n_frames):
+        freq_map_src = []
+        freq_map_dst = []
+
+        for i in range(1, 5):
+            f_orig = orig_formants.get(i, [0]*n_frames)[t]
+            f_shifted = shifted_formants.get(i, [0]*n_frames)[t]
+            if f_orig > 50 and f_orig < sr / 2 and f_shifted > 50:
+                freq_map_src.append(f_orig)
+                freq_map_dst.append(f_shifted)
+
+        freq_map_src = [0.0] + freq_map_src + [sr / 2]
+        freq_map_dst = [0.0] + freq_map_dst + [sr / 2]
+
+        warp_func = interp1d(freq_map_dst, freq_map_src, kind='linear', bounds_error=False, fill_value='extrapolate')
+        warped_freqs = warp_func(freqs)
+        interp_func = interp1d(freqs, env[:, t], kind='linear', fill_value='extrapolate')
+        warped_env[:, t] = interp_func(warped_freqs)
+
+    return warped_env
+
 print('Spectral Envelope Estimation:')
 # Spectral envelope
 S_orig = stft(y, n_fft=n_fft, hop_length=hop_length, window=window)
@@ -223,6 +288,13 @@ mag = np.abs(S_orig) + 1e-8
 
 # try skipping
 env_spec = mag
+
+if individual_formant_shift:
+    n_frames = env_spec.shape[1]
+    formants = extract_formants(y, sr, hop_length, target_frames=n_frames)
+    ind_formant_ratios = {1: F1, 2: F2, 3: F3, 4: F4}
+    ind_formant_shifted = transpose_formants(formants, ind_formant_ratios)
+    env_spec = warp_env_by_formants(env_spec, formants, ind_formant_shifted, sr)
 
 env_spec4breathiness = gaussian_filter1d(env_spec, sigma=1.75, axis=0)
 
