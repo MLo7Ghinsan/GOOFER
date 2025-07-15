@@ -12,6 +12,7 @@ test = False
 
 # params
 noise_type = 'white'  #'white' or 'brown' or 'pink'
+noise_transition_smoothness = 100 # Smoothness when transitioning from unvoiced to breathiness, was 40 originally
 uv_strength = 0.5 # Unvoiced noise level
 breath_strength = 0.0375 # Breathiness in voiced speech
 voicing_threshold = 25 # Hz (above this = voiced)
@@ -543,7 +544,7 @@ aper_uv = istft(S_uv, hop_length=hop_length, window=window, length=len(y))
 log_time('    ISTFT (breath + uv)')
 
 # Gain Control (Breathiness vs Unvoiced)
-voicing_mask_smooth = gaussian_filter1d(voicing_mask, sigma=20)
+voicing_mask_smooth = gaussian_filter1d(voicing_mask, sigma=noise_transition_smoothness)
 breathy_aper = aper_breath * voicing_mask_smooth * breath_strength
 noisy_aper = aper_uv * (1.0 - voicing_mask_smooth) * uv_strength
 aper_uv = noisy_aper
