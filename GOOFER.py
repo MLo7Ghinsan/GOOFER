@@ -291,7 +291,7 @@ def generate_noise(noise_type, length, sr):
         wn = np.random.randn(length)
         noise = np.cumsum(wn)
     else:
-        raise ValueError(f"Unknown noise type: {noise_type}")
+        raise ValueError(f'Unknown noise type: {noise_type}')
     return noise / (np.max(np.abs(noise)) + 1e-8)
 
 print('Spectral Envelope Estimation:')
@@ -485,7 +485,7 @@ freq_bins = S_harm.shape[0]
 boost_curve = np.linspace(1, 100, freq_bins).reshape(-1, 1)
 # lower f0 reproduce original signal, this is an attempt to fix
 if pitch_shift < 1.0:
-    env_spec_4harm = gaussian_filter1d(env_spec, sigma=2, axis=0)
+    env_spec_4harm = gaussian_filter1d(env_spec, sigma=1.65, axis=0)
 else:
     env_spec_4harm = env_spec
 
