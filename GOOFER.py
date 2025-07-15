@@ -11,6 +11,7 @@ start_time = time.time()
 test = False
 
 # params
+noise_type = 'white'  #'white' or 'brown' or 'pink'
 uv_strength = 0.5 # Unvoiced noise level
 breath_strength = 0.0375 # Breathiness in voiced speech
 voicing_threshold = 25 # Hz (above this = voiced)
@@ -52,7 +53,7 @@ apply_brightness = True
 normalize = True
 save_features_wav = True
 
-input_file = 'input.wav' # test file lmao
+input_file = 'toy.wav' # test file lmao
 input_file2 = None
 morph_strength = 0.0 # 0.0 = only first audio, 1.0 = only second audio
 
@@ -274,19 +275,29 @@ def warp_env_by_formants(env, orig_formants, shifted_formants, sr):
 
     return warped_env
 
+def generate_noise(noise_type, length, sr):
+    if noise_type == 'white':
+        noise = np.random.randn(length)
+    elif noise_type == 'pink':
+        # 1/f filter in the freq-domain
+        X = np.fft.rfft(np.random.randn(length))
+        freqs = np.fft.rfftfreq(length, 1/sr)
+        # scale by 1/sqrt(f) (pink)
+        X /= np.maximum(freqs, 1.0)**0.5
+        noise = np.fft.irfft(X, n=length)
+    elif noise_type == 'brown':
+        # integrate white noise (1/f²)
+        wn = np.random.randn(length)
+        noise = np.cumsum(wn)
+    else:
+        raise ValueError(f"Unknown noise type: {noise_type}")
+    return noise / (np.max(np.abs(noise)) + 1e-8)
+
 print('Spectral Envelope Estimation:')
 # Spectral envelope
 S_orig = stft(y, n_fft=n_fft, hop_length=hop_length, window=window)
 log_time('    STFT')
 mag = np.abs(S_orig) + 1e-8
-#log_mag = np.log(mag)
-#ceps = np.fft.ifft(log_mag, axis=0)
-#n_ceps = 100 # lesser value makes it loses 'characteristic', initially 50 but it doesnt have enough quality
-#ceps[n_ceps:-n_ceps, :] = 0
-#env_spec = np.fft.fft(ceps, axis=0).real
-#env_spec = np.exp(env_spec)
-
-# try skipping
 env_spec = mag
 
 if individual_formant_shift:
@@ -497,27 +508,16 @@ harmonic = istft(S_harm, hop_length=hop_length, window=window, length=len(y))
 log_time('    ISTFT')
 
 print('Aperiodic Synthesis:')
-# Voiced (breath) noise
-white_breath = np.random.randn(len(y))
-white_breath /= np.max(np.abs(white_breath) + 1e-6)
-filtered_breath = gaussian_filter1d(medfilt(white_breath, kernel_size=5), sigma=1.0)
-S_breath = stft(filtered_breath, n_fft=n_fft, hop_length=hop_length, window=window)
-
-# Unvoiced (fricative) noise
-white_uv = np.random.randn(len(y))
-white_uv /= np.max(np.abs(white_uv) + 1e-6)
-S_uv = stft(white_uv, n_fft=n_fft, hop_length=hop_length, window=window)
+raw_noise = generate_noise(noise_type, len(y), sr)
+S_noise = stft(raw_noise, n_fft=n_fft, hop_length=hop_length, window=window)
 
 log_time('    STFT (breath + uv)')
 
-env_breath = match_env_frames(env_spec4breathiness, S_breath.shape[1])
-env_uv = match_env_frames(env_spec4breathiness, S_uv.shape[1])
+env_noise = match_env_frames(env_spec4breathiness, S_noise.shape[1])
 
-mag_breath = np.abs(S_breath) + 1e-8
-S_breath = (S_breath / mag_breath) * env_breath
-
-mag_uv = np.abs(S_uv) + 1e-8
-S_uv = (S_uv / mag_uv) * env_uv
+mag_noise = np.abs(S_noise) + 1e-8
+S_breath = (S_noise / mag_noise) * env_noise
+S_uv = (S_noise / mag_noise) * env_noise
 
 if apply_brightness:
     brightness_curve = create_brightness_curve(S_breath.shape[0], sr, 3500, 5000, gain_db=20.0)
