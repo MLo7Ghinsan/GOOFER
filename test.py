@@ -4,13 +4,13 @@ import numpy as np
 import GOOFER as gf
 
 
-input_file = 'pjs001_singing_seg001.wav'
+input_file = 'test.wav'
 
 noise_type = 'white'  #'white' or 'brown' or 'pink'
 
 stretch_factor = 1.0
 
-pitch_shift = 1.0
+pitch_shift = 1.2
 
 formant_shift = 1.0
 
@@ -61,19 +61,32 @@ if save_feature:
         f0_interp=f0_interp,
         voicing_mask=voicing_mask,
         formants=formants,
-        sr=np.array([sr]),
-        y_len=np.array([len(y)]) 
+        sr=np.array([sr])
     )
     print(f'Saved feature set: {input_name}_features.npz')
 
-env_spec, f0_interp, voicing_mask, formants, sr, y_len = gf.load_features("pjs001_singing_seg001_features.npz")
+env_spec, f0_interp, voicing_mask, formants, sr = gf.load_features(f"{input_name}_features.npz")
+
+offset = 0.5
+cutoff = 1.5
+
+hop_length = 64
+start_sample = int(offset * sr)
+end_sample = int(cutoff * sr)
+
+start_frame = start_sample // hop_length
+end_frame = end_sample // hop_length
+
+env_spec = env_spec[:, start_frame:end_frame]
+f0_interp = f0_interp[start_sample:end_sample]
+voicing_mask = voicing_mask[start_sample:end_sample]
+cropped_formants = {}
+for i, track in formants.items():
+    cropped_formants[i] = track[start_frame:end_frame]
+y_len = np.zeros_like(f0_interp, dtype=np.float32)
 
 reconstruct, harmonic, aper_uv, aper_bre= gf.synthesize(
-    env_spec, f0_interp, voicing_mask, np.zeros(y_len, dtype=np.float32), sr,
-    noise_type=noise_type, stretch_factor=stretch_factor,
-    pitch_shift=pitch_shift, formant_shift=formant_shift,
-    formants=formants, F1_shift=F1, F2_shift=F2, F3_shift=F3, F4_shift=F4,
-    f0_jitter=f0_jitter, volume_jitter=volume_jitter, add_subharm=add_subharm)
+    env_spec, f0_interp, voicing_mask, y_len, sr,)
 
 reconstruct_wav = f'{input_name}_fureatures_reconstruct.wav'
 sf.write(reconstruct_wav, reconstruct, sr)
