@@ -13,7 +13,8 @@ def load_features(path):
         data["f0_interp"].astype(np.float32),
         data["voicing_mask"].astype(np.float32),
         data["formants"].item(),
-        int(data["sr"][0])
+        int(data["sr"][0]),
+        int(data["y_len"][0])
     )
 
 def save_features(path, env_spec, f0_interp, voicing_mask, formants, sr, y_len):
@@ -23,7 +24,8 @@ def save_features(path, env_spec, f0_interp, voicing_mask, formants, sr, y_len):
         f0_interp=f0_interp.astype(np.float16),
         voicing_mask=voicing_mask.astype(np.float16),
         formants=formants,
-        sr=np.array([sr])
+        sr=np.array([sr]),
+        y_len=np.array([y_len]),
     )
 
 def stft(x, n_fft=2048, hop_length=512, window=None):
