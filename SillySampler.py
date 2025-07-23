@@ -85,12 +85,24 @@ class GooferResampler:
         self.tempo      = float(tempo.lstrip('!'))
         self.bend       = pitch_string_to_cents(pitch_string)
 
+        # gender flag
         self.formant_shift = 1.0 + (self.flags.get('g', 0) / 200.0)
+
+        # formants band flag
         self.F1_shift = 1.0 + (self.flags.get('fa', 0) / 100.0)
         self.F2_shift = 1.0 + (self.flags.get('fb', 0) / 100.0)
         self.F3_shift = 1.0 + (self.flags.get('fc', 0) / 100.0)
         self.F4_shift = 1.0 + (self.flags.get('fd', 0) / 100.0)
 
+        # roughness/harshness flag
+        sh_val = self.flags.get('sh', None)
+        self.f0_jitter = sh_val is not None and sh_val > 0
+        self.f0_jitter_strength = (sh_val or 0) / 50.0
+        sr_val = self.flags.get('sr', None)
+        self.volume_jitter = sr_val is not None and sr_val > 0
+        self.volume_jitter_strength = (sr_val or 0) / 50.0
+
+        # stretch flag
         loop_flag = next((k for k in self.flags if k.lower() == 'l'), None)
         if loop_flag:
             lval = self.flags[loop_flag]
@@ -319,6 +331,11 @@ class GooferResampler:
             F2_shift=self.F2_shift,
             F3_shift=self.F3_shift,
             F4_shift=self.F4_shift,
+            f0_jitter=self.f0_jitter,
+            f0_jitter_strength=self.f0_jitter_strength,
+            volume_jitter=self.volume_jitter,
+            volume_jitter_strength_harm=self.volume_jitter_strength,
+            volume_jitter_strength_breath=self.volume_jitter_strength * 2,
         )
 
         # apply volume and write output
