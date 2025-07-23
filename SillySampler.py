@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import sys, os, logging, re, traceback
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -91,7 +90,15 @@ class GooferResampler:
 
         loop_flag = next((k for k in self.flags if k.lower() == 'l'), None)
         if loop_flag:
-            self.loop_mode = 'avg' if self.flags[loop_flag] == 1 else 'concat'
+            lval = self.flags[loop_flag]
+            if lval == 0:
+                self.loop_mode = 'concat'
+            elif lval == 1:
+                self.loop_mode = 'avg'
+            elif lval == 2:
+                self.loop_mode = 'stretch'
+            else:
+                self.loop_mode = 'concat' # default slay
         else:
             self.loop_mode = 'concat' # default if no L flag (bad lmao)
 
@@ -166,56 +173,66 @@ class GooferResampler:
             reps = desired_tail_frames // tail_frames
             rem  = desired_tail_frames % tail_frames
 
-            if self.loop_mode == 'avg':
-                loop_tile = (env_tail + env_tail[:, ::-1]) / 2.0
-                parts = [loop_tile] * reps
-                if rem:
-                    parts.append(loop_tile[:, :rem])
-                env_tail_looped = np.concatenate(parts, axis=1)
+            if self.loop_mode == 'stretch':
+                if tail_frames == 0:
+                    env_tail_looped = np.zeros((env_spec.shape[0], desired_tail_frames), dtype=np.float32)
+                else:
+                    env_tail_looped = gf.stretch_feature(env_tail, desired_tail_frames / tail_frames)
 
-            else: # "concat" mode
-                full_loop = [env_tail.copy()]
-                for _ in range(reps - 1):
-                    prev = full_loop[-1]
+            elif tail_frames >= desired_tail_frames:
+                env_tail_looped = env_tail[:, :desired_tail_frames]
 
-                    max_fade = min(8, tail_frames // 2)
-                    fade_in  = np.linspace(0, 1, max_fade)[None, :]
-                    fade_out = np.linspace(1, 0, max_fade)[None, :]
+            else:
+                if self.loop_mode == 'avg':
+                    loop_tile = (env_tail + env_tail[:, ::-1]) / 2.0
+                    parts = [loop_tile] * reps
+                    if rem:
+                        parts.append(loop_tile[:, :rem])
+                    env_tail_looped = np.concatenate(parts, axis=1)
 
-                    A = prev[:, -max_fade:]
-                    B = env_tail[:, :max_fade]
-                    crossfaded = A * fade_out + B * fade_in
+                else: # "concat" mode
+                    full_loop = [env_tail.copy()]
+                    for _ in range(reps - 1):
+                        prev = full_loop[-1]
 
-                    chunk = np.concatenate([
-                        prev[:, :-max_fade],
-                        crossfaded,
-                        env_tail[:, max_fade:]
-                    ], axis=1)
-
-                    full_loop[-1] = chunk
-                    full_loop.append(env_tail.copy())
-
-                if rem:
-                    last_chunk = env_tail[:, :rem]
-                    prev = full_loop[-1]
-                    max_fade = min(8, rem // 2)
-                    if max_fade > 0:
+                        max_fade = min(8, tail_frames // 2)
                         fade_in  = np.linspace(0, 1, max_fade)[None, :]
                         fade_out = np.linspace(1, 0, max_fade)[None, :]
+
                         A = prev[:, -max_fade:]
-                        B = last_chunk[:, :max_fade]
+                        B = env_tail[:, :max_fade]
                         crossfaded = A * fade_out + B * fade_in
+
                         chunk = np.concatenate([
                             prev[:, :-max_fade],
                             crossfaded,
-                            last_chunk[:, max_fade:]
+                            env_tail[:, max_fade:]
                         ], axis=1)
-                    else:
-                        chunk = np.concatenate([prev, last_chunk], axis=1)
 
-                    full_loop[-1] = chunk
+                        full_loop[-1] = chunk
+                        full_loop.append(env_tail.copy())
 
-                env_tail_looped = np.concatenate(full_loop, axis=1)
+                    if rem:
+                        last_chunk = env_tail[:, :rem]
+                        prev = full_loop[-1]
+                        max_fade = min(8, rem // 2)
+                        if max_fade > 0:
+                            fade_in  = np.linspace(0, 1, max_fade)[None, :]
+                            fade_out = np.linspace(1, 0, max_fade)[None, :]
+                            A = prev[:, -max_fade:]
+                            B = last_chunk[:, :max_fade]
+                            crossfaded = A * fade_out + B * fade_in
+                            chunk = np.concatenate([
+                                prev[:, :-max_fade],
+                                crossfaded,
+                                last_chunk[:, max_fade:]
+                            ], axis=1)
+                        else:
+                            chunk = np.concatenate([prev, last_chunk], axis=1)
+
+                        full_loop[-1] = chunk
+
+                    env_tail_looped = np.concatenate(full_loop, axis=1)
 
         # loop f0 and voicing mask
         tail_len = len(f0_tail)
@@ -347,5 +364,4 @@ if __name__ == '__main__':
         except Exception:
             logging.exception('Failed to render')
             sys.exit(1)
-
 
