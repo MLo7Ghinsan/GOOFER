@@ -15,7 +15,7 @@ logging.basicConfig(format='%(message)s', level=logging.INFO)
 # --- UTAU pitch & flags parsing --------------------------------------------
 notes = {'C':0,'C#':1,'D':2,'D#':3,'E':4,'F':5,'F#':6,'G':7,'G#':8,'A':9,'A#':10,'B':11}
 note_re = re.compile(r'([A-G]#?)(-?\d+)')
-flag_re = re.compile(r'([A-Za-z])([+-]?\d+)?')
+flag_re = re.compile(r'([A-Za-z]{1,2})([+-]?\d+)?')
 
 def parse_flags(flag_string):
     flags = {}
@@ -85,8 +85,11 @@ class GooferResampler:
         self.tempo      = float(tempo.lstrip('!'))
         self.bend       = pitch_string_to_cents(pitch_string)
 
-        gv = self.flags.get('g', 0)
-        self.formant_shift = 1.0 + (gv / 200.0)
+        self.formant_shift = 1.0 + (self.flags.get('g', 0) / 200.0)
+        self.F1_shift = 1.0 + (self.flags.get('fa', 0) / 100.0)
+        self.F2_shift = 1.0 + (self.flags.get('fb', 0) / 100.0)
+        self.F3_shift = 1.0 + (self.flags.get('fc', 0) / 100.0)
+        self.F4_shift = 1.0 + (self.flags.get('fd', 0) / 100.0)
 
         loop_flag = next((k for k in self.flags if k.lower() == 'l'), None)
         if loop_flag:
@@ -250,11 +253,38 @@ class GooferResampler:
             f0_tail_looped   = np.concatenate(parts_f0)
             mask_tail_looped = np.concatenate(parts_mask)
 
+        formants_pre = {k: v[start_frame:consonant_frame] for k, v in forms.items()}
+        formants_tail = {k: v[consonant_frame:end_frame] for k, v in forms.items()}
+
+        formants_tail_looped = {}
+        for k in forms:
+            track = formants_tail[k]
+            if self.loop_mode == 'stretch':
+                formants_tail_looped[k] = gf.stretch_feature(np.array(track), desired_tail_frames / len(track)).tolist()
+            else:
+                reps = desired_tail_frames // len(track)
+                rem = desired_tail_frames % len(track)
+                formants_tail_looped[k] = (track * reps + track[:rem])
+
+        formants_new = {
+            k: np.concatenate([formants_pre[k], formants_tail_looped[k]])
+            for k in forms
+        }
+
         # concatenate pre and looped tail
         env_new  = np.concatenate([env_pre, env_tail_looped], axis=1)
         f0_new   = np.concatenate([f0_pre, f0_tail_looped])
         mask_new = np.concatenate([mask_pre, mask_tail_looped])
 
+        target_frames = env_new.shape[1]
+        for k in formants_new:
+            f = formants_new[k]
+            if len(f) < target_frames:
+                pad = target_frames - len(f)
+                formants_new[k] = np.pad(f, (0, pad), mode='edge')
+            elif len(f) > target_frames:
+                formants_new[k] = f[:target_frames]
+                
         # thank you straycat
         n_total   = len(f0_new)
         t_samples = np.arange(n_total) / sr
@@ -283,7 +313,12 @@ class GooferResampler:
             mask_new,
             y_len_new,
             sr,
-            formant_shift=self.formant_shift
+            formant_shift=self.formant_shift,
+            formants=formants_new,
+            F1_shift=self.F1_shift,
+            F2_shift=self.F2_shift,
+            F3_shift=self.F3_shift,
+            F4_shift=self.F4_shift,
         )
 
         # apply volume and write output
