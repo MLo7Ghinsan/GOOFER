@@ -241,12 +241,15 @@ def generate_noise(noise_type, length, sr):
     return noise / (np.max(np.abs(noise)) + 1e-8)
 
 def extract_features(y, sr, n_fft=2048, hop_length=512,
-                     f0_min=75, f0_max=600, f0_merge_range=10):
+                     f0_min=75, f0_max=600, f0_merge_range=2):
     window = np.hanning(n_fft)
     voicing_threshold = f0_min
     S_orig = stft(y, n_fft=n_fft, hop_length=hop_length, window=window)
     mag = np.abs(S_orig) + 1e-8
     env_spec = gaussian_filter1d(mag, sigma=4.0, axis=0)
+    blurred = gaussian_filter1d(env_spec, sigma=1.0, axis=1)
+    alpha = 1.0
+    env_spec = env_spec + alpha * (env_spec - blurred)
 
     n_frames = env_spec.shape[1]
     formants = extract_formants(y, sr, hop_length, target_frames=n_frames)
@@ -480,7 +483,7 @@ def synthesize(env_spec , f0_interp, voicing_mask,
 
 if __name__ == "__main__":
 
-    input_file = 'breath.wav'
+    input_file = 'pjs001_singing_seg001.wav'
 
     noise_type = 'white'  #'white' or 'brown' or 'pink'
 
