@@ -60,7 +60,7 @@ def istft(stft_matrix, hop_length=512, window=None, length=None):
     y = y[pad:pad + (length or (len(y)-2*pad))]
     return y
 
-def fix_f0_gaps(f0_array, max_gap=10):
+def fix_f0_gaps(f0_array, max_gap=4):
     f0_fixed = f0_array.copy()
     i = 0
     while i < len(f0_fixed):
@@ -240,13 +240,13 @@ def generate_noise(noise_type, length, sr):
         raise ValueError(f"Unknown noise type: {noise_type}")
     return noise / (np.max(np.abs(noise)) + 1e-8)
 
-def extract_features(y, sr, n_fft=512, hop_length=64,
+def extract_features(y, sr, n_fft=2048, hop_length=512,
                      f0_min=75, f0_max=600, f0_merge_range=10):
     window = np.hanning(n_fft)
     voicing_threshold = f0_min
     S_orig = stft(y, n_fft=n_fft, hop_length=hop_length, window=window)
     mag = np.abs(S_orig) + 1e-8
-    env_spec = mag
+    env_spec = gaussian_filter1d(mag, sigma=4.0, axis=0)
 
     n_frames = env_spec.shape[1]
     formants = extract_formants(y, sr, hop_length, target_frames=n_frames)
@@ -268,7 +268,7 @@ def extract_features(y, sr, n_fft=512, hop_length=64,
     return env_spec, f0_interp, voicing_mask, formants
 
 def synthesize(env_spec , f0_interp, voicing_mask,
-               y, sr, n_fft=512, hop_length=64,
+               y, sr, n_fft=2048, hop_length=512,
                stretch_factor=1.0, start_sec=None, end_sec=None,
                apply_brightness=True, normalize=True, noise_type='white',
                uv_strength=0.5, breath_strength=0.0375, noise_transition_smoothness=100,
@@ -404,11 +404,8 @@ def synthesize(env_spec , f0_interp, voicing_mask,
     mag_harm = np.max(np.abs(S_harm) + 1e-8)
     freq_bins = S_harm.shape[0]
     boost_curve = np.linspace(1, 100, freq_bins).reshape(-1, 1)
-    # lower f0 reproduce original signal, this is an attempt to fix
-    if pitch_shift < 1.0:
-        env_spec_4harm = gaussian_filter1d(env_spec, sigma=1.5, axis=0)
-    else:
-        env_spec_4harm = env_spec
+
+    env_spec_4harm = env_spec
 
     S_harm = (S_harm / mag_harm) * env_spec_4harm
     S_harm = S_harm * boost_curve
@@ -483,7 +480,7 @@ def synthesize(env_spec , f0_interp, voicing_mask,
 
 if __name__ == "__main__":
 
-    input_file = 'pjs001_singing_seg001.wav'
+    input_file = 'breath.wav'
 
     noise_type = 'white'  #'white' or 'brown' or 'pink'
 
@@ -509,17 +506,29 @@ if __name__ == "__main__":
     if y.ndim > 1:
         y = y.mean(axis=1)
 
-    env_spec, f0_interp, voicing_mask, formants = extract_features(y, sr)
+
+    n_fft = 2048
+    hop_length = 512
+
+    env_spec, f0_interp, voicing_mask, formants = extract_features(y, sr, n_fft=n_fft, hop_length=hop_length)
 
     reconstruct, harmonic, aper_uv, aper_bre= synthesize(
         env_spec, f0_interp, voicing_mask, y, sr,
+        n_fft=n_fft, hop_length=hop_length,
         noise_type=noise_type, stretch_factor=stretch_factor,
         pitch_shift=pitch_shift, formant_shift=formant_shift,
         formants=formants, F1_shift=F1, F2_shift=F2, F3_shift=F3, F4_shift=F4,
         f0_jitter=f0_jitter, volume_jitter=volume_jitter, add_subharm=add_subharm)
 
+
     reconstruct_wav = f'{input_name}_reconstruct.wav'
+    harmonic_wav = f'{input_name}_harmonic.wav'
+    breathiness = f'{input_name}_breathiness.wav'
+    unvoiced = f'{input_name}_unvoiced.wav'
     sf.write(reconstruct_wav, reconstruct, sr)
+    sf.write(harmonic_wav, harmonic, sr)
+    sf.write(breathiness, aper_bre, sr)
+    sf.write(unvoiced, aper_uv, sr)
     print(f'Reconstructed audio saved: {reconstruct_wav}')
 
     save_feature = False
