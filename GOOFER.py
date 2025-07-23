@@ -240,16 +240,16 @@ def generate_noise(noise_type, length, sr):
         raise ValueError(f"Unknown noise type: {noise_type}")
     return noise / (np.max(np.abs(noise)) + 1e-8)
 
-def extract_features(y, sr, n_fft=2048, hop_length=512,
+def extract_features(y, sr, n_fft=1024, hop_length=256,
                      f0_min=75, f0_max=600, f0_merge_range=2):
     window = np.hanning(n_fft)
     voicing_threshold = f0_min
     S_orig = stft(y, n_fft=n_fft, hop_length=hop_length, window=window)
     mag = np.abs(S_orig) + 1e-8
-    env_spec = gaussian_filter1d(mag, sigma=4.0, axis=0)
-    blurred = gaussian_filter1d(env_spec, sigma=1.0, axis=1)
-    alpha = 1.0
-    env_spec = env_spec + alpha * (env_spec - blurred)
+    env_spec = gaussian_filter1d(mag, sigma=2.0, axis=0)
+    #blurred = gaussian_filter1d(env_spec, sigma=1.0, axis=1)
+    #alpha = 1.0
+    #env_spec = env_spec + alpha * (env_spec - blurred)
 
     n_frames = env_spec.shape[1]
     formants = extract_formants(y, sr, hop_length, target_frames=n_frames)
@@ -271,7 +271,7 @@ def extract_features(y, sr, n_fft=2048, hop_length=512,
     return env_spec, f0_interp, voicing_mask, formants
 
 def synthesize(env_spec , f0_interp, voicing_mask,
-               y, sr, n_fft=2048, hop_length=512,
+               y, sr, n_fft=1024, hop_length=256,
                stretch_factor=1.0, start_sec=None, end_sec=None,
                apply_brightness=True, normalize=True, noise_type='white',
                uv_strength=0.5, breath_strength=0.0375, noise_transition_smoothness=100,
@@ -510,8 +510,8 @@ if __name__ == "__main__":
         y = y.mean(axis=1)
 
 
-    n_fft = 2048
-    hop_length = 512
+    n_fft = 2048 // 2
+    hop_length = 512 // 2
 
     env_spec, f0_interp, voicing_mask, formants = extract_features(y, sr, n_fft=n_fft, hop_length=hop_length)
 
@@ -534,7 +534,7 @@ if __name__ == "__main__":
     sf.write(unvoiced, aper_uv, sr)
     print(f'Reconstructed audio saved: {reconstruct_wav}')
 
-    save_feature = False
+    save_feature = True
     if save_feature:
         env_spec = env_spec.astype(np.float16)
         f0_interp = f0_interp.astype(np.float16)
