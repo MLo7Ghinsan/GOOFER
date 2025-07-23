@@ -117,7 +117,7 @@ class GooferResampler:
     def resample(self, features):
         env_spec, f0_interp, voicing_mask, forms, sr, ylen = features
 
-        hop_length = 64
+        hop_length = 256
 
         start_sample     = int(self.offset * sr)
         consonant_sample = start_sample + int(self.consonant * sr)
