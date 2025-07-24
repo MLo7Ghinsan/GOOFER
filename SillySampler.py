@@ -397,7 +397,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v1.1'
+version = 'v1.2'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
