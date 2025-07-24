@@ -102,6 +102,15 @@ class GooferResampler:
         self.volume_jitter = sr_val is not None and sr_val > 0
         self.volume_jitter_strength = (sr_val or 0) / 50.0
 
+        # breathiness flag
+        self.breathiness_mix = (self.flags.get('B', 0) + 100) / 100.0
+
+        # unvoiced flag
+        self.unvoiced_mix = (self.flags.get('U', 0) + 100) / 100.0
+
+        # voicing flag
+        self.harmonic_mix = np.clip(self.flags.get('V', 100), 0, 100) / 100.0
+
         # stretch flag
         loop_flag = next((k for k in self.flags if k.lower() == 'l'), None)
         if loop_flag:
@@ -339,7 +348,13 @@ class GooferResampler:
         )
 
         # apply volume and write output
-        out = reconstruct * self.volume
+        breath_scaled  = aper_bre * self.breathiness_mix
+        uv_scaled      = aper_uv * self.unvoiced_mix
+        harmonic_scaled= harmonic * self.harmonic_mix
+
+        custom_mix = harmonic_scaled + uv_scaled + breath_scaled
+        out = custom_mix * self.volume
+
         logging.info(f'Writing {self.out_file}')
         sf.write(self.out_file, out, sr)
 
@@ -416,4 +431,3 @@ if __name__ == '__main__':
         except Exception:
             logging.exception('Failed to render')
             sys.exit(1)
-
