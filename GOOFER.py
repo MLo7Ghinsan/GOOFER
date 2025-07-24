@@ -414,7 +414,7 @@ def synthesize(env_spec , f0_interp, voicing_mask,
     S_harm = S_harm * boost_curve
 
     if apply_brightness:
-        brightness_curve = create_brightness_curve(S_harm.shape[0], sr, 3500, 5000, gain_db=6.0)
+        brightness_curve = create_brightness_curve(S_harm.shape[0], sr, 3500, 5000, gain_db=3.0)
         voiced_frames = voicing_mask[::hop_length]
         if voiced_frames.size < S_harm.shape[1]:
             voiced_frames = np.pad(voiced_frames, (0, S_harm.shape[1] - voiced_frames.size), mode='edge')
