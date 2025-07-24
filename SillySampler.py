@@ -7,6 +7,7 @@ import numpy as np
 import soundfile as sf
 import scipy.interpolate as interp
 from scipy.interpolate import Akima1DInterpolator
+from scipy.signal import butter, sosfilt, sosfilt_zi
 
 import GOOFER as gf
 
@@ -61,6 +62,45 @@ def note_to_midi(n):
 
 def midi_to_hz(m):
     return 440.0 * 2**((m-69)/12)
+
+def dynamic_butter_filter(signal, f0, sr, cutoff_factor, order=4, btype='lowpass'):
+    segment_size = 256
+    n_segments = len(signal) // segment_size
+    remainder = len(signal) % segment_size
+    out = np.zeros_like(signal)
+    zi = None
+    for i in range(n_segments + (1 if remainder else 0)):
+        if i < n_segments:
+            start = i * segment_size
+            end = start + segment_size
+        else:
+            start = n_segments * segment_size
+            end = len(signal)
+        seg_signal = signal[start:end]
+        seg_f0 = f0[start:end]
+        mean_f0 = np.mean(seg_f0[seg_f0 > 0])
+        if np.isnan(mean_f0) or mean_f0 <= 0:
+            out[start:end] = seg_signal
+            continue
+        fc = mean_f0 * cutoff_factor
+        nyq = 0.5 * sr
+        normal_fc = fc / nyq
+        if btype == 'lowpass':
+            if normal_fc >= 0.99:
+                out[start:end] = seg_signal
+                continue
+            normal_fc = min(normal_fc, 0.99)
+        elif btype == 'highpass':
+            if normal_fc <= 0.01:
+                out[start:end] = seg_signal
+                continue
+            normal_fc = max(normal_fc, 20 / nyq)
+        sos = butter(order, normal_fc, btype=btype, output='sos')
+        if zi is None:
+            zi = sosfilt_zi(sos) * seg_signal[0] if len(seg_signal) > 0 else np.zeros((sos.shape[0], 2))
+        filtered, zi = sosfilt(sos, seg_signal, zi=zi)
+        out[start:end] = filtered
+    return out
 
 class GooferResampler:
     def __init__(
@@ -125,6 +165,9 @@ class GooferResampler:
                 self.loop_mode = 'concat' # default slay
         else:
             self.loop_mode = 'concat' # default if no L flag (bad lmao)
+
+        # tension flag
+        self.tension = self.flags.get('st', 0) / 100.0
 
         self.render()
 
@@ -347,12 +390,41 @@ class GooferResampler:
             volume_jitter_strength_breath=self.volume_jitter_strength * 2,
         )
 
+        # apply tension if not zero
+        if self.tension != 0:
+                    abs_ten = abs(self.tension)
+                    lp_factor = 2 - abs_ten
+                    hp_factor = abs_ten
+                    if self.tension < 0:
+                        harmonic = dynamic_butter_filter(harmonic, f0_new, sr, lp_factor, order=4, btype='lowpass')
+                        aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, hp_factor, order=4, btype='highpass')
+                    else:
+                        highpassed = dynamic_butter_filter(harmonic, f0_new, sr, hp_factor * 4, order=4, btype='highpass')
+                        boosted = highpassed * (1.0 + abs_ten * 20)
+                        harmonic += boosted
+                        aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, lp_factor / 0.5, order=6, btype='lowpass')
+                        aper_bre *= 1.0 - abs_ten
+
         # apply volume and write output
         breath_scaled  = aper_bre * self.breathiness_mix
         uv_scaled      = aper_uv * self.unvoiced_mix
         harmonic_scaled= harmonic * self.harmonic_mix
 
-        custom_mix = harmonic_scaled + uv_scaled + breath_scaled
+        voiced_mix = harmonic_scaled + breath_scaled
+
+        target_peak = 0.98
+
+        if self.tension != 0:
+            max_amplitude = np.max(np.abs(voiced_mix))
+            if max_amplitude > 0:
+                voiced_mix = voiced_mix / max_amplitude * target_peak
+
+        custom_mix = voiced_mix + uv_scaled
+
+        max_amplitude = np.max(np.abs(custom_mix))
+        if max_amplitude > 0:
+            custom_mix = custom_mix / max_amplitude * target_peak
+
         out = custom_mix * self.volume
 
         logging.info(f'Writing {self.out_file}')
@@ -397,7 +469,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v1.2'
+version = 'v1.3'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
