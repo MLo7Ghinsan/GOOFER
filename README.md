@@ -14,4 +14,5 @@ ___
 | `U`  | `-100`-`100`  | `0`   | Unvoiced (fricative) level. `-100` = none, `0` = raw, `100` = 2x louder |
 | `sh` | `0`-`100`     | `0`   | F0 jitter (pitch instability). Harsh vocal effect |
 | `sr` | `0`-`100`     | `0`   | Volume jitter (voiced only). Rough vocal effect |
+| `st` | `0`-`100`     | `0`   | Tension effect (attempt to) |
 | `L`  | `0`, `1`, `2` | `0`   | Sustain behavior: <br> `L0` = concat loop <br> `L1` = averaged mirror loop <br> `L2` = stretch |
