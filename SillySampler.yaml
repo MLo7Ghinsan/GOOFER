@@ -1,0 +1,103 @@
+expressions:
+  SF1:
+    name: Scale Formant (F1)
+    abbr: SF1
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: fa
+  SF2:
+    name: Scale Formant (F2)
+    abbr: SF2
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: fb
+  SF3:
+    name: Scale Formant (F3)
+    abbr: SF3
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: fc
+  SF4:
+    name: Scale Formant (F4)
+    abbr: SF4
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: fd
+  Hvoi:
+    name: Voiced Harmonics
+    abbr: Hvoi
+    type: Numerical
+    min: 0
+    max: 100
+    default_value: 100
+    is_flag: true
+    flag: V
+  cons:
+    name: Unvoiced Consonant Gain
+    abbr: cons
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: U
+  Sbre:
+    name: Breathiness (SillySampler)
+    abbr: Sbre
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: B
+  grit:
+    name: Grittiness
+    abbr: grit
+    type: Numerical
+    min: 0
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: sh
+  dist:
+    name: Distortion
+    abbr: dist
+    type: Numerical
+    min: 0
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: sr
+  tens:
+    name: Tension (SillySampler)
+    abbr: tens
+    type: Numerical
+    min: 0
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: st
+  sust:
+    name: Sustain Behavior
+    abbr: sust
+    type: Options
+    min: 0
+    max: 1
+    default_value: 0
+    is_flag: true
+    options:
+    - L0
+    - L1
+    - L2
