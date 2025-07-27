@@ -256,7 +256,14 @@ def extract_features(y, sr, n_fft=1024, hop_length=256,
 
     snd = parselmouth.Sound(y, sr)
     frame_duration = hop_length / sr
-    pitch = snd.to_pitch(time_step=frame_duration, pitch_floor=f0_min, pitch_ceiling=f0_max)
+    pitch = snd.to_pitch(method=parselmouth.Sound.ToPitchMethod.AC,
+                        time_step=frame_duration,
+                        pitch_floor=f0_min,
+                        pitch_ceiling=f0_max,
+                        voicing_threshold=0.63,
+                        silence_threshold=0.01,
+                        voiced_unvoiced_cost=0.01
+                        )
     f0_track = np.nan_to_num(pitch.selected_array['frequency'])
     f0_track = fix_f0_gaps(f0_track, f0_merge_range)
 
