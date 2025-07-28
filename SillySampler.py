@@ -1,7 +1,8 @@
-import sys, os, logging, re, traceback
+import sys, os, logging, re, traceback, multiprocessing
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import soundfile as sf
@@ -101,6 +102,37 @@ def dynamic_butter_filter(signal, f0, sr, cutoff_factor, order=4, btype='lowpass
         filtered, zi = sosfilt(sos, seg_signal, zi=zi)
         out[start:end] = filtered
     return out
+    
+def is_audio_file(file):
+    return file.suffix.lower() in ['.wav', '.flac', '.aiff', '.aif', '.mp3']
+
+def process_file(audio_file):
+    feat_file = audio_file.with_name(f"{audio_file.stem}_features.goofy")
+    if feat_file.exists():
+        logging.info(f"[SKIP] {feat_file.name} already exists")
+        return
+    try:
+        logging.info(f"[EXTRACT] {audio_file}")
+        y, sr = sf.read(audio_file)
+        if y.ndim > 1:
+            y = y.mean(axis=1)
+        env, f0i, vmask, forms = gf.extract_features(y, sr)
+        ylen = len(y)
+        gf.save_features(feat_file, env, f0i, vmask, forms, sr, ylen)
+    except Exception as e:
+        logging.error(f"[ERROR] Failed to extract {audio_file.name}: {str(e)}")
+
+def extract_features_recursive(input_path):
+    input_path = Path(input_path)
+    all_files = input_path.rglob('*') if input_path.is_dir() else [input_path]
+    audio_files = [f for f in all_files if f.is_file() and is_audio_file(f)]
+
+    num_threads = multiprocessing.cpu_count()
+
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        executor.map(process_file, audio_files)
+
+    logging.info(f"[DONE] Extracted features from {len(audio_files)} files using {num_threads} threads.")
 
 class GooferResampler:
     def __init__(
@@ -172,7 +204,7 @@ class GooferResampler:
         self.render()
 
     def render(self):
-        feat = self.in_file.with_name(f'{self.in_file.stem}_features.npz')
+        feat = self.in_file.with_name(f'{self.in_file.stem}_features.goofy')
         if feat.exists():
             logging.info('Loading cached features')
             env, f0i, vmask, forms, sr, ylen = gf.load_features(feat)
@@ -497,6 +529,17 @@ if __name__ == '__main__':
         args = sys.argv[1:]
         logging.info(f'Args: {args} (count={len(args)})')
         try:
+            if len(args) == 1:
+                # SLAY: Folder mode!!! :D Just extract features, nothing else.
+                input_path = Path(args[0])
+                if input_path.exists():
+                    logging.info(f'Scanning folder: {input_path}')
+                    extract_features_recursive(input_path)
+                    logging.info(f'Done extracting features.')
+                    input("Press Enter to exit... ")
+                    sys.exit(0)
+                else:
+                    raise FileNotFoundError(f"Folder or file not found: {input_path}")
             if len(args) < 13:
                 raise TypeError(f'Expected 13 arguments but got {len(args)}')
             GooferResampler(*args)
