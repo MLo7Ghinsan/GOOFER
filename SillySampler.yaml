@@ -53,15 +53,6 @@ expressions:
     default_value: 0
     is_flag: true
     flag: U
-  Sbre:
-    name: Breathiness (SillySampler)
-    abbr: Sbre
-    type: Numerical
-    min: -100
-    max: 100
-    default_value: 0
-    is_flag: true
-    flag: B
   grit:
     name: Grittiness
     abbr: grit
@@ -84,7 +75,7 @@ expressions:
     name: Tension (SillySampler)
     abbr: tens
     type: Numerical
-    min: 0
+    min: -100
     max: 100
     default_value: 0
     is_flag: true
