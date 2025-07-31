@@ -5,6 +5,7 @@ import parselmouth
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d, gaussian_filter
 from scipy.signal import medfilt
+from pysptk.sptk import rapt, swipe
 
 def load_features(path):
     data = np.load(path, allow_pickle=True)
@@ -28,6 +29,22 @@ def save_features(path, env_spec, f0_interp, voicing_mask, formants, sr, y_len):
             sr=np.array([sr]),
             y_len=np.array([y_len]),
         )
+
+def f0_estimate(snd, fr_duration, f0_min=75, f0_max=950, voice_thresh=0.63, sil_thresh=0.01, voice_cost=0.01):
+
+    #pitch = swipe(x=snd, fs=44100, hopsize=256, min=f0_min, max=f0_max, threshold=0.3)
+
+    snd = parselmouth.Sound(snd, sr)
+    pitch = snd.to_pitch(method=parselmouth.Sound.ToPitchMethod.AC,
+                        time_step=fr_duration,
+                        pitch_floor=f0_min,
+                        pitch_ceiling=f0_max,
+                        voicing_threshold=voice_thresh,
+                        silence_threshold=sil_thresh,
+                        voiced_unvoiced_cost=voice_cost
+                        )
+
+    return pitch.selected_array['frequency']
 
 def stft(x, n_fft=2048, hop_length=512, window=None):
     if window is None:
@@ -143,15 +160,33 @@ def match_env_frames(env, target_frames):
         return np.pad(env, ((0, 0), (0, pad_width)), mode='edge')
     return env
 
-def create_volume_jitter(length, sr, speed=30.0, strength=0.5, seed=None):
-    #noise modulato... Band-limit it (like dirty LFO)
+#def create_volume_jitter(length, sr, speed=30.0, strength=0.5, seed=None):
+#    #noise modulato... Band-limit it (like dirty LFO)
+#    if seed is not None:
+#        np.random.seed(seed)
+#    t = np.linspace(0, length / sr, num=length)
+#    noise = np.random.randn(len(t))
+#    noise = gaussian_filter1d(noise, sigma=sr / (speed * 6))
+#    noise /= np.max(np.abs(noise) + 1e-6)
+#    envelope = 1.0 + noise * strength
+#    return envelope
+
+def create_volume_jitter(length, sr, speed=6.0, strength=0.1, seed=None):
+    #acts more like a vibrato now
     if seed is not None:
         np.random.seed(seed)
-    t = np.linspace(0, length / sr, num=length)
-    noise = np.random.randn(len(t))
-    noise = gaussian_filter1d(noise, sigma=sr / (speed * 6))
-    noise /= np.max(np.abs(noise) + 1e-6)
-    envelope = 1.0 + noise * strength
+    t = np.arange(length) / sr
+    phase = np.random.uniform(0, 2*np.pi) if seed is not None else 0 # making vibrato sinusoid
+    vibrato = np.sin(2 * np.pi * speed * t + phase)
+
+    # add fade
+    fade_samples = int(0.1 * sr)
+    if fade_samples < length:
+        fade_in = np.linspace(0, 1, fade_samples)
+        vibrato[:fade_samples] *= fade_in
+    envelope = 1.0 + vibrato * strength
+    
+    #return np.clip(envelope, 0.5, 1.5)
     return envelope
 
 def apply_f0_jitter(f0_array, sr, speed=40.0, strength=0.04, seed=None):
@@ -163,6 +198,52 @@ def apply_f0_jitter(f0_array, sr, speed=40.0, strength=0.04, seed=None):
     noise /= np.max(np.abs(noise) + 1e-6)
     jitter = 1.0 + noise * strength
     return jitter
+
+def add_subharms(f0_interp, sr, subharm_weight=0.5, subharm_octaves=1):
+    sub_pulse = np.zeros_like(f0_interp)
+    phase = 0.0
+    last_f0 = 160.0  # fallback
+    pulse_cache = {} 
+    
+    for i in range(len(f0_interp)):
+        f0 = f0_interp[i]
+        if f0 > 0:
+            last_f0 = f0
+        T = (2 ** subharm_octaves) / last_f0  # 1 or 2 octaves below
+        phase += f0_interp[i] / (sr * (2 ** subharm_octaves))
+        
+        if phase >= 1.0:
+            key = f'{last_f0:.2f}_sub{subharm_octaves}oct'
+            if key not in pulse_cache:
+                pulse_cache[key] = lf_model_pulse(T, Ra=0.02, Rg=1.7, Rk=1, sr=sr)
+            lf_pulse = pulse_cache[key]
+            start = i
+            end = min(len(sub_pulse), start + len(lf_pulse))
+            sub_pulse[start:end] += lf_pulse[:end - start]
+            phase -= 1.0
+    
+    sub_pulse /= np.max(np.abs(sub_pulse) + 1e-6)
+    return sub_pulse * subharm_weight
+
+def apply_subharm_vibrato(f0_interp, sr, vibrato_rate=6.0, vibrato_depth=0.1, vibrato_delay=0.1, seed=None):
+    if seed is not None:
+        np.random.seed(seed)
+    t = np.arange(len(f0_interp)) / sr
+    
+    phase = np.random.uniform(0, 2*np.pi) if seed else 0 # create sinusoid
+    vibrato = np.sin(2 * np.pi * vibrato_rate * t + phase)
+    
+    fade_in_samples = int(vibrato_delay * sr) # fade
+    fade_in = np.linspace(0, 1, fade_in_samples)
+    if len(fade_in) < len(vibrato):
+        vibrato[:fade_in_samples] *= fade_in
+    
+    # voiced only
+    voiced = f0_interp > 0
+    modulated_f0 = f0_interp.copy()
+    modulated_f0[voiced] = modulated_f0[voiced] * (1 + vibrato[voiced] * vibrato_depth)
+    
+    return modulated_f0
 
 def extract_formants(y, sr, hop_length, max_formants=5, target_frames=None):
     snd = parselmouth.Sound(y, sr)
@@ -257,15 +338,8 @@ def extract_features(y, sr, n_fft=1024, hop_length=256,
 
     snd = parselmouth.Sound(y, sr)
     frame_duration = hop_length / sr
-    pitch = snd.to_pitch(method=parselmouth.Sound.ToPitchMethod.AC,
-                        time_step=frame_duration,
-                        pitch_floor=f0_min,
-                        pitch_ceiling=f0_max,
-                        voicing_threshold=0.63,
-                        silence_threshold=0.01,
-                        voiced_unvoiced_cost=0.01
-                        )
-    f0_track = np.nan_to_num(pitch.selected_array['frequency'])
+    pitch = f0_estimate(snd=np.asarray(y), fr_duration=frame_duration)
+    f0_track = np.nan_to_num(pitch)
     f0_track = fix_f0_gaps(f0_track, f0_merge_range)
 
     times_f0 = np.linspace(0, len(y)/sr, num=len(f0_track))
@@ -278,7 +352,7 @@ def extract_features(y, sr, n_fft=1024, hop_length=256,
 
     return env_spec, f0_interp, voicing_mask, formants
 
-def synthesize(env_spec , f0_interp, voicing_mask,
+def synthesize(env_spec, f0_interp, voicing_mask,
                y, sr, n_fft=1024, hop_length=256,
                stretch_factor=1.0, start_sec=None, end_sec=None,
                apply_brightness=True, normalize=True, noise_type='white',
@@ -286,7 +360,8 @@ def synthesize(env_spec , f0_interp, voicing_mask,
                pitch_shift=1.0, formant_shift=1.0,
                f0_jitter=False, f0_jitter_speed=100, f0_jitter_strength=1.5,
                volume_jitter=False, volume_jitter_speed=150, volume_jitter_strength_harm=50, volume_jitter_strength_breath=100,
-               add_subharm=False, subharm_weight=0.5,
+               add_subharm=False, subharm_weight=0.5, subharm_vibrato=False, subharm_vibrato_rate=6.0, subharm_vibrato_depth=0.1,
+               subharm_vibrato_delay=0.1,
                F1_shift=1.0, F2_shift=1.0, F3_shift=1.0, F4_shift=1.0,
                formants=None):
     window = np.hanning(n_fft)
@@ -374,36 +449,30 @@ def synthesize(env_spec , f0_interp, voicing_mask,
 
         if phase >= 1.0:
             if last_f0 not in pulse_cache:
-                # low Rg makes gritty harmonics sacrificing dynamics
-                pulse_cache[last_f0] = lf_model_pulse(T, Ra=0.02, Rg=1.7, Rk=1, sr=sr) #Ra=0.02, Rg=1.7, Rk=0
+                pulse_cache[last_f0] = lf_model_pulse(T, Ra=0.02, Rg=1.7, Rk=1, sr=sr)
             lf_pulse = pulse_cache[last_f0]
             start = i
             end = min(len(pulse), start + len(lf_pulse))
             pulse[start:end] += lf_pulse[:end - start]
             phase -= 1.0
-
+            
     if add_subharm:
-        sub_pulse = np.zeros_like(f0_interp)
-        phase = 0.0
-        for i in range(len(f0_interp)):
-            f0 = f0_interp[i]
-            if f0 > 0:
-                last_f0 = f0
-            T = 2.0 / last_f0 # 1 octave below
-            phase += f0_interp[i] / (sr * 2.0)
-
-            if phase >= 1.0:
-                key = f'{last_f0:.2f}_sub1oct'
-                if key not in pulse_cache:
-                    pulse_cache[key] = lf_model_pulse(T, Ra=0.02, Rg=1.7, Rk=1, sr=sr)
-                lf_pulse = pulse_cache[key]
-                start = i
-                end = min(len(sub_pulse), start + len(lf_pulse))
-                sub_pulse[start:end] += lf_pulse[:end - start]
-                phase -= 1.0
-
-        sub_pulse /= np.max(np.abs(sub_pulse) + 1e-6)
-        pulse += subharm_weight * sub_pulse
+        if subharm_vibrato:
+            f0_for_subharms = apply_subharm_vibrato(
+                f0_interp, sr,
+                vibrato_rate=subharm_vibrato_rate,
+                vibrato_depth=subharm_vibrato_depth,
+                vibrato_delay=subharm_vibrato_delay
+            )
+        else:
+            f0_for_subharms = f0_interp
+            
+        sub_pulse = add_subharms(
+            f0_for_subharms, sr,
+            subharm_weight=subharm_weight,
+            subharm_octaves=1
+        )
+        pulse += sub_pulse
 
     S_harm = stft(pulse, n_fft=n_fft, hop_length=hop_length, window=window)
     if env_spec.shape[1] > S_harm.shape[1]:
@@ -491,7 +560,7 @@ def synthesize(env_spec , f0_interp, voicing_mask,
 
 if __name__ == "__main__":
 
-    input_file = 'pjs001_singing_seg001.wav'
+    input_file = 'solaria.mp3'
 
     noise_type = 'white'  #'white' or 'brown' or 'pink'
 
@@ -507,8 +576,17 @@ if __name__ == "__main__":
     F4 = 1.0
 
     volume_jitter = False #only on voiced
+    volume_jitter_speed=128
+    volume_jitter_strength_harm = 60
+    volume_jitter_strength_breath = 10
+    
+    subharm_vibrato = False
+    subharm_vibrato_rate=48
+    subharm_vibrato_depth=1.5
+    subharm_vibrato_delay=0.01
 
     add_subharm = False
+    subharm_weight=3.0
 
     f0_jitter = False
 
@@ -529,7 +607,13 @@ if __name__ == "__main__":
         noise_type=noise_type, stretch_factor=stretch_factor,
         pitch_shift=pitch_shift, formant_shift=formant_shift,
         formants=formants, F1_shift=F1, F2_shift=F2, F3_shift=F3, F4_shift=F4,
-        f0_jitter=f0_jitter, volume_jitter=volume_jitter, add_subharm=add_subharm)
+        f0_jitter=f0_jitter, volume_jitter=volume_jitter,
+        add_subharm=add_subharm, subharm_weight=subharm_weight,
+        subharm_vibrato=subharm_vibrato, subharm_vibrato_rate=subharm_vibrato_rate,
+        subharm_vibrato_depth=subharm_vibrato_depth, 
+        subharm_vibrato_delay=subharm_vibrato_delay,
+        volume_jitter_speed=volume_jitter_speed, volume_jitter_strength_harm=volume_jitter_strength_harm,
+        volume_jitter_strength_breath=volume_jitter_strength_breath)
 
 
     reconstruct_wav = f'{input_name}_reconstruct.wav'
