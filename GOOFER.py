@@ -160,16 +160,6 @@ def match_env_frames(env, target_frames):
         return np.pad(env, ((0, 0), (0, pad_width)), mode='edge')
     return env
 
-#def create_volume_jitter(length, sr, speed=30.0, strength=0.5, seed=None):
-#    #noise modulato... Band-limit it (like dirty LFO)
-#    if seed is not None:
-#        np.random.seed(seed)
-#    t = np.linspace(0, length / sr, num=length)
-#    noise = np.random.randn(len(t))
-#    noise = gaussian_filter1d(noise, sigma=sr / (speed * 6))
-#    noise /= np.max(np.abs(noise) + 1e-6)
-#    envelope = 1.0 + noise * strength
-#    return envelope
 
 def create_volume_jitter(length, sr, speed=6.0, strength=0.1, seed=None, vibrato=False):
     #acts more like a vibrato now
