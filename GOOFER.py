@@ -227,7 +227,7 @@ def apply_subharm_vibrato(f0_interp, sr, vibrato_rate=6.0, vibrato_depth=0.1, vi
     t = np.arange(len(f0_interp)) / sr
     
     phase = np.random.uniform(0, 2*np.pi) if seed else 0 # create sinusoid
-    vibrato = np.sin(2 * np.pi * vibrato_rate * t + phase)
+    vibrato = np.sin(2 * np.pi * vibrato_rate * t + phase) * subharm_weight
     
     fade_in_samples = int(vibrato_delay * sr) # fade
     fade_in = np.linspace(0, 1, fade_in_samples)
@@ -458,7 +458,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
                 f0_interp, sr,
                 vibrato_rate=subharm_vibrato_rate,
                 vibrato_depth=subharm_vibrato_depth,
-                vibrato_delay=subharm_vibrato_delay
+                vibrato_delay=subharm_vibrato_delay,
             )
         else:
             f0_for_subharms = f0_interp
@@ -556,7 +556,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
 if __name__ == "__main__":
 
-    input_file = '_input.wav'
+    input_file = 'solaria.mp3'
 
     noise_type = 'white'  #'white' or 'brown' or 'pink'
 
@@ -571,19 +571,19 @@ if __name__ == "__main__":
     F3 = 1.0
     F4 = 1.0
 
-    volume_jitter = True #only on voiced
+    volume_jitter = False #only on voiced
     volume_vibrato=True
     volume_jitter_speed=128
     volume_jitter_strength_harm = 60
     volume_jitter_strength_breath = 10
     
     subharm_vibrato = True
-    subharm_vibrato_rate=48
+    subharm_vibrato_rate=36
     subharm_vibrato_depth=1.5
     subharm_vibrato_delay=0.01
 
     add_subharm = True
-    subharm_weight=1.0
+    subharm_weight=3.0
 
     f0_jitter = False
 
