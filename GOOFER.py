@@ -171,23 +171,29 @@ def match_env_frames(env, target_frames):
 #    envelope = 1.0 + noise * strength
 #    return envelope
 
-def create_volume_jitter(length, sr, speed=6.0, strength=0.1, seed=None):
+def create_volume_jitter(length, sr, speed=6.0, strength=0.1, seed=None, vibrato=False):
     #acts more like a vibrato now
     if seed is not None:
         np.random.seed(seed)
     t = np.arange(length) / sr
-    phase = np.random.uniform(0, 2*np.pi) if seed is not None else 0 # making vibrato sinusoid
-    vibrato = np.sin(2 * np.pi * speed * t + phase)
+    if vibrato:
+        phase = np.random.uniform(0, 2*np.pi) if seed is not None else 0 # making vibrato sinusoid
+        noise = np.sin(2 * np.pi * speed * t + phase)
 
-    # add fade
-    fade_samples = int(0.1 * sr)
-    if fade_samples < length:
-        fade_in = np.linspace(0, 1, fade_samples)
-        vibrato[:fade_samples] *= fade_in
-    envelope = 1.0 + vibrato * strength
+        # add fade
+        fade_samples = int(0.1 * sr)
+        if fade_samples < length:
+            fade_in = np.linspace(0, 1, fade_samples)
+            noise[:fade_samples] *= fade_in
+    else:
+        noise = np.random.randn(len(t))
+        noise = gaussian_filter1d(noise, sigma=sr / (speed * 6))
+        noise /= np.max(np.abs(noise) + 1e-6)
+        
+    envelope = 1.0 + noise * strength
     
-    #return np.clip(envelope, 0.5, 1.5)
-    return envelope
+    return np.clip(envelope, 0.5, 1.5) if vibrato else envelope
+    #return envelope
 
 def apply_f0_jitter(f0_array, sr, speed=40.0, strength=0.04, seed=None):
     if seed is not None:
@@ -359,7 +365,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
                uv_strength=0.5, breath_strength=0.0375, noise_transition_smoothness=100,
                pitch_shift=1.0, formant_shift=1.0,
                f0_jitter=False, f0_jitter_speed=100, f0_jitter_strength=1.5,
-               volume_jitter=False, volume_jitter_speed=150, volume_jitter_strength_harm=50, volume_jitter_strength_breath=100,
+               volume_jitter=False, volume_vibrato=False, volume_jitter_speed=150, volume_jitter_strength_harm=50, volume_jitter_strength_breath=100,
                add_subharm=False, subharm_weight=0.5, subharm_vibrato=False, subharm_vibrato_rate=6.0, subharm_vibrato_depth=0.1,
                subharm_vibrato_delay=0.1,
                F1_shift=1.0, F2_shift=1.0, F3_shift=1.0, F4_shift=1.0,
@@ -538,8 +544,8 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
     if volume_jitter:
     # the volume jitter thing
-        harmonic_jitter = create_volume_jitter(len(harmonic), sr, speed=volume_jitter_speed, strength=volume_jitter_strength_harm)
-        breathy_jitter = create_volume_jitter(len(aper_bre), sr, speed=volume_jitter_speed, strength=volume_jitter_strength_breath)
+        harmonic_jitter = create_volume_jitter(len(harmonic), sr, speed=volume_jitter_speed, strength=volume_jitter_strength_harm, vibrato=volume_vibrato)
+        breathy_jitter = create_volume_jitter(len(aper_bre), sr, speed=volume_jitter_speed, strength=volume_jitter_strength_breath, vibrato=volume_vibrato)
         voicing_jitter_mask = gaussian_filter1d(voicing_mask, sigma=20)
         harmonic *= 1.0 + (harmonic_jitter - 1.0) * voicing_jitter_mask
         aper_bre *= 1.0 + (breathy_jitter - 1.0) * voicing_jitter_mask
@@ -560,7 +566,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
 if __name__ == "__main__":
 
-    input_file = 'solaria.mp3'
+    input_file = '_input.wav'
 
     noise_type = 'white'  #'white' or 'brown' or 'pink'
 
@@ -575,18 +581,19 @@ if __name__ == "__main__":
     F3 = 1.0
     F4 = 1.0
 
-    volume_jitter = False #only on voiced
+    volume_jitter = True #only on voiced
+    volume_vibrato=True
     volume_jitter_speed=128
     volume_jitter_strength_harm = 60
     volume_jitter_strength_breath = 10
     
-    subharm_vibrato = False
+    subharm_vibrato = True
     subharm_vibrato_rate=48
     subharm_vibrato_depth=1.5
     subharm_vibrato_delay=0.01
 
-    add_subharm = False
-    subharm_weight=3.0
+    add_subharm = True
+    subharm_weight=1.0
 
     f0_jitter = False
 
@@ -611,7 +618,7 @@ if __name__ == "__main__":
         add_subharm=add_subharm, subharm_weight=subharm_weight,
         subharm_vibrato=subharm_vibrato, subharm_vibrato_rate=subharm_vibrato_rate,
         subharm_vibrato_depth=subharm_vibrato_depth, 
-        subharm_vibrato_delay=subharm_vibrato_delay,
+        subharm_vibrato_delay=subharm_vibrato_delay, volume_vibrato=volume_vibrato,
         volume_jitter_speed=volume_jitter_speed, volume_jitter_strength_harm=volume_jitter_strength_harm,
         volume_jitter_strength_breath=volume_jitter_strength_breath)
 
