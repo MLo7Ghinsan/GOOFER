@@ -10,9 +10,9 @@ from pysptk.sptk import rapt, swipe
 def load_features(path):
     data = np.load(path, allow_pickle=True)
     return (
-        data["env_spec"].astype(np.float32),
-        data["f0_interp"].astype(np.float32),
-        data["voicing_mask"].astype(np.float32),
+        data["env_spec"],
+        data["f0_interp"],
+        data["voicing_mask"],
         data["formants"].item(),
         int(data["sr"][0]),
         int(data["y_len"][0])
@@ -22,9 +22,9 @@ def save_features(path, env_spec, f0_interp, voicing_mask, formants, sr, y_len):
     with open(path, 'wb') as goofy_ahh:
         np.savez_compressed(
             goofy_ahh,
-            env_spec=env_spec.astype(np.float16),
-            f0_interp=f0_interp.astype(np.float16),
-            voicing_mask=voicing_mask.astype(np.float16),
+            env_spec=env_spec,
+            f0_interp=f0_interp,
+            voicing_mask=voicing_mask,
             formants=formants,
             sr=np.array([sr]),
             y_len=np.array([y_len]),
