@@ -1,7 +1,7 @@
 expressions:
   SF1:
-    name: Scale Formant (F1)
-    abbr: SF1
+    name: Scale Formant (F1) (SillySampler)
+    abbr: S_F1
     type: Numerical
     min: -100
     max: 100
@@ -9,8 +9,8 @@ expressions:
     is_flag: true
     flag: fa
   SF2:
-    name: Scale Formant (F2)
-    abbr: SF2
+    name: Scale Formant (F2) (SillySampler)
+    abbr: S_F2
     type: Numerical
     min: -100
     max: 100
@@ -18,8 +18,8 @@ expressions:
     is_flag: true
     flag: fb
   SF3:
-    name: Scale Formant (F3)
-    abbr: SF3
+    name: Scale Formant (F3) (SillySampler)
+    abbr: S_F3
     type: Numerical
     min: -100
     max: 100
@@ -27,8 +27,8 @@ expressions:
     is_flag: true
     flag: fc
   SF4:
-    name: Scale Formant (F4)
-    abbr: SF4
+    name: Scale Formant (F4) (SillySampler)
+    abbr: S_F4
     type: Numerical
     min: -100
     max: 100
@@ -36,8 +36,8 @@ expressions:
     is_flag: true
     flag: fd
   Hvoi:
-    name: Voiced Harmonics
-    abbr: Hvoi
+    name: Voiced Harmonics (SillySampler)
+    abbr: S_V
     type: Numerical
     min: 0
     max: 100
@@ -45,8 +45,8 @@ expressions:
     is_flag: true
     flag: V
   cons:
-    name: Unvoiced Consonant Gain
-    abbr: cons
+    name: Unvoiced Consonant Gain (SillySampler)
+    abbr: S_C
     type: Numerical
     min: -100
     max: 100
@@ -54,8 +54,8 @@ expressions:
     is_flag: true
     flag: U
   grit:
-    name: Grittiness
-    abbr: grit
+    name: Grittiness (SillySampler)
+    abbr: S_G
     type: Numerical
     min: 0
     max: 100
@@ -63,8 +63,8 @@ expressions:
     is_flag: true
     flag: sh
   dist:
-    name: Distortion
-    abbr: dist
+    name: Distortion (SillySampler)
+    abbr: S_D
     type: Numerical
     min: 0
     max: 100
@@ -73,7 +73,7 @@ expressions:
     flag: sr
   tens:
     name: Tension (SillySampler)
-    abbr: tens
+    abbr: S_T
     type: Numerical
     min: -100
     max: 100
@@ -81,8 +81,8 @@ expressions:
     is_flag: true
     flag: st
   sust:
-    name: Sustain Behavior
-    abbr: sust
+    name: Sustain Behavior (SillySampler)
+    abbr: S_SS
     type: Options
     min: 0
     max: 1
