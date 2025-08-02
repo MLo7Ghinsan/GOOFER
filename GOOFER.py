@@ -5,7 +5,6 @@ import parselmouth
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d, gaussian_filter
 from scipy.signal import medfilt
-from pysptk.sptk import rapt, swipe
 
 def load_features(path):
     data = np.load(path, allow_pickle=True)
@@ -32,9 +31,7 @@ def save_features(path, env_spec, f0_interp, voicing_mask, formants, sr, y_len):
 
 def f0_estimate(snd, fr_duration, f0_min=75, f0_max=950, voice_thresh=0.63, sil_thresh=0.01, voice_cost=0.01):
 
-    #pitch = swipe(x=snd, fs=44100, hopsize=256, min=f0_min, max=f0_max, threshold=0.3)
-
-    snd = parselmouth.Sound(snd, sr)
+    #snd = parselmouth.Sound(snd, sr)
     pitch = snd.to_pitch(method=parselmouth.Sound.ToPitchMethod.AC,
                         time_step=fr_duration,
                         pitch_floor=f0_min,
@@ -334,7 +331,7 @@ def extract_features(y, sr, n_fft=1024, hop_length=256,
 
     snd = parselmouth.Sound(y, sr)
     frame_duration = hop_length / sr
-    pitch = f0_estimate(snd=np.asarray(y), fr_duration=frame_duration)
+    pitch = f0_estimate(snd=snd, fr_duration=frame_duration)
     f0_track = np.nan_to_num(pitch)
     f0_track = fix_f0_gaps(f0_track, f0_merge_range)
 
