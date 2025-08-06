@@ -80,6 +80,15 @@ expressions:
     default_value: 0
     is_flag: true
     flag: st
+  grwl:
+    name: Growl (SillySampler)
+    abbr: S_GW
+    type: Numerical
+    min: 0
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: sg
   sust:
     name: Sustain Behavior (SillySampler)
     abbr: S_SS
