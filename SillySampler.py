@@ -433,7 +433,7 @@ class GooferResampler:
             subharm_vibrato_rate=75,
             subharm_vibrato_depth=3,
             subharm_vibrato_delay=0.01,
-            cut_subharm_below_f0=False,
+            cut_subharm_below_f0=True,
             subharm_f0_jitter=0,
         )
 
@@ -520,7 +520,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v1.3'
+version = 'v1.4'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
