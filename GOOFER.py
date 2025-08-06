@@ -277,31 +277,53 @@ def apply_f0_jitter(f0_array, sr, speed=40.0, strength=0.04, seed=None):
     jitter = 1.0 + noise * strength
     return jitter
 
-def add_subharms(f0_interp, sr, subharm_weight=0.5, subharm_octaves=1):
+def add_subharms(f0_interp, sr, subharm_weight=0.5, subharm_semitones=-12):
     sub_pulse = np.zeros_like(f0_interp)
     phase = 0.0
     last_f0 = 160.0  # fallback
-    pulse_cache = {} 
-    
+    pulse_cache = {}
+    phase_tracker = {}
+
+    if not isinstance(subharm_semitones, (list, tuple, np.ndarray)):
+        subharm_semitones = [subharm_semitones]
+
+    ratios = [2 ** (semitone / 12.0) for semitone in subharm_semitones]
+
+    for r in ratios:
+        phase_tracker[r] = 0.0
+
     for i in range(len(f0_interp)):
         f0 = f0_interp[i]
         if f0 > 0:
             last_f0 = f0
-        T = (2 ** subharm_octaves) / last_f0  # 1 or 2 octaves below
-        phase += f0_interp[i] / (sr * (2 ** subharm_octaves))
-        
-        if phase >= 1.0:
-            key = f'{last_f0:.2f}_sub{subharm_octaves}oct'
-            if key not in pulse_cache:
-                pulse_cache[key] = lf_model_pulse(T, Ra=0.02, Rg=1.7, Rk=1, sr=sr)
-            lf_pulse = pulse_cache[key]
-            start = i
-            end = min(len(sub_pulse), start + len(lf_pulse))
-            sub_pulse[start:end] += lf_pulse[:end - start]
-            phase -= 1.0
+        for ratio in ratios:
+            sub_f0 = last_f0 * ratio
+            if sub_f0 < 1e-2:
+                continue
+            T = 1.0 / sub_f0
+            phase_tracker[ratio] += sub_f0 / sr
+
+            if phase_tracker[ratio] >= 1.0:
+                key = f'{sub_f0:.2f}_sub{ratio:.3f}'
+                if key not in pulse_cache:
+                    pulse_cache[key] = lf_model_pulse(T, Ra=0.02, Rg=1.7, Rk=1, sr=sr)
+                lf_pulse = pulse_cache[key]
+                start = i
+                end = min(len(sub_pulse), start + len(lf_pulse))
+                sub_pulse[start:end] += lf_pulse[:end - start]
+                phase_tracker[ratio] -= 1.0
     
     sub_pulse /= np.max(np.abs(sub_pulse) + 1e-6)
     return sub_pulse * subharm_weight
+
+def add_multiple_subharms(f0_interp, sr, semitone_list=[-12, 12], weights=None):
+    if weights is None:
+        weights = [1.0 / len(semitone_list)] * len(semitone_list)
+    
+    total = np.zeros_like(f0_interp)
+    for semi, weight in zip(semitone_list, weights):
+        total += add_subharms(f0_interp, sr, subharm_weight=weight, subharm_semitones=semi)
+    return total
 
 def apply_subharm_vibrato(f0_interp, sr, vibrato_rate=6.0, vibrato_depth=0.1, vibrato_delay=0.1, seed=None):
     if seed is not None:
@@ -438,7 +460,8 @@ def synthesize(env_spec, f0_interp, voicing_mask,
                pitch_shift=1.0, formant_shift=1.0,
                f0_jitter=False, f0_jitter_speed=100, f0_jitter_strength=1.5,
                volume_jitter=False, volume_vibrato=False, volume_jitter_speed=150, volume_jitter_strength_harm=50, volume_jitter_strength_breath=100,
-               add_subharm=False, subharm_weight=0.5, subharm_vibrato=False, subharm_vibrato_rate=6.0, subharm_vibrato_depth=0.1,
+               add_subharm=False, subharm_semitones=-12, subharm_weight=0.5, subharm_vibrato=False,
+               cut_subharm_below_f0=True, subharm_vibrato_rate=6.0, subharm_vibrato_depth=0.1, subharm_f0_jitter=0,
                subharm_vibrato_delay=0.1,
                F1_shift=1.0, F2_shift=1.0, F3_shift=1.0, F4_shift=1.0,
                formants=None):
@@ -455,6 +478,15 @@ def synthesize(env_spec, f0_interp, voicing_mask,
         ind_formant_shifted = transpose_formants(formants, ind_formant_ratios)
         env_spec = warp_env_by_formants(env_spec, formants, ind_formant_shifted, sr)
 
+    # dynamic highpass based on F0 for better breathiness ig
+    freqs = np.fft.rfftfreq(n_fft, 1 / sr).reshape(-1, 1)  # (n_freq, 1)
+    f0_env_frames = f0_interp[::hop_length]
+    f0_env_frames = np.pad(f0_env_frames, (0, n_frames - len(f0_env_frames)), mode='edge')
+    cutoff = f0_env_frames.reshape(1, -1)  # (1, n_frames)
+
+    # Smooth sigmoid mask per frame
+    sharpness = 5
+    highpass_mask = 1.0 / (1.0 + np.exp(-(freqs - cutoff) / sharpness))
     if formant_shift != 1.0:
         env_spec = shift_formants(env_spec, formant_shift, sr)
 
@@ -535,24 +567,32 @@ def synthesize(env_spec, f0_interp, voicing_mask,
             phase -= 1.0
             
     if add_subharm:
+        f0_for_subharms = f0_interp
+        if subharm_f0_jitter > 0.0:
+            subharm_jitter = apply_f0_jitter(f0_for_subharms, sr, speed=f0_jitter_speed, strength=subharm_f0_jitter)
+            f0_for_subharms *= 1.0 + ((subharm_jitter - 1.0) * voicing_mask)
+
         if subharm_vibrato:
             f0_for_subharms = apply_subharm_vibrato(
-                f0_interp, sr,
+                f0_for_subharms, sr,
                 vibrato_rate=subharm_vibrato_rate,
                 vibrato_depth=subharm_vibrato_depth,
                 vibrato_delay=subharm_vibrato_delay,
             )
         else:
-            f0_for_subharms = f0_interp
+            f0_for_subharms = f0_for_subharms
             
         sub_pulse = add_subharms(
             f0_for_subharms, sr,
             subharm_weight=subharm_weight,
-            subharm_octaves=1
+            subharm_semitones=subharm_semitones
         )
         pulse += sub_pulse
 
     S_harm = stft(pulse, n_fft=n_fft, hop_length=hop_length, window=window)
+
+    if cut_subharm_below_f0:
+        S_harm = S_harm * highpass_mask
     if env_spec.shape[1] > S_harm.shape[1]:
         env_spec = env_spec[:, :S_harm.shape[1]]
     elif env_spec.shape[1] < S_harm.shape[1]:
@@ -584,15 +624,6 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
     raw_noise = generate_noise(noise_type, len(y), sr)
     S_noise = stft(raw_noise, n_fft=n_fft, hop_length=hop_length, window=window)
-
-    # dynamic highpass based on F0 for better breathiness ig
-    freqs = np.fft.rfftfreq(n_fft, 1 / sr).reshape(-1, 1)  # (n_freq, 1)
-    f0_env_frames = f0_interp[::hop_length]
-    f0_env_frames = np.pad(f0_env_frames, (0, S_noise.shape[1] - len(f0_env_frames)), mode='edge')
-    cutoff = f0_env_frames.reshape(1, -1)  # (1, n_frames)
-
-    # Smooth sigmoid mask per frame
-    highpass_mask = (freqs >= cutoff)
 
     # Apply to noise
     S_noise_filtered = S_noise * highpass_mask
@@ -678,8 +709,11 @@ if __name__ == "__main__":
     subharm_vibrato_depth=1.5
     subharm_vibrato_delay=0.01
 
-    add_subharm = False
-    subharm_weight=3.0
+    add_subharm = True
+    subharm_weight=1 #3.0
+    subharm_semitones=-12 # or like a list for multiple subharms lets say [-12, 12]
+    cut_subharm_below_f0=True
+    subharm_f0_jitter=0
 
     f0_jitter = False
 
@@ -703,7 +737,8 @@ if __name__ == "__main__":
         f0_jitter=f0_jitter, volume_jitter=volume_jitter,
         add_subharm=add_subharm, subharm_weight=subharm_weight,
         subharm_vibrato=subharm_vibrato, subharm_vibrato_rate=subharm_vibrato_rate,
-        subharm_vibrato_depth=subharm_vibrato_depth, 
+        subharm_semitones=subharm_semitones, cut_subharm_below_f0=cut_subharm_below_f0,
+        subharm_vibrato_depth=subharm_vibrato_depth, subharm_f0_jitter=subharm_f0_jitter,
         subharm_vibrato_delay=subharm_vibrato_delay, volume_vibrato=volume_vibrato,
         volume_jitter_speed=volume_jitter_speed, volume_jitter_strength_harm=volume_jitter_strength_harm,
         volume_jitter_strength_breath=volume_jitter_strength_breath)
