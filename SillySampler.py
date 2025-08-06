@@ -201,6 +201,11 @@ class GooferResampler:
         # tension flag
         self.tension = self.flags.get('st', 0) / 100.0
 
+        # growl flag
+        sg_val = self.flags.get('sg', 0)
+        self.subharm_weight = (sg_val / 100.0) * 1.5
+        self.add_subharm = sg_val > 0
+
         self.render()
 
     def render(self):
@@ -399,11 +404,12 @@ class GooferResampler:
         f0_new = mask_new * midi_to_hz(midi_curve)
 
         # dummy y-length (goofer doesnt care)
-        y_len_new = np.empty(f0_new.shape, dtype=np.bool_)
+        y_len_new = np.empty(mask_new.shape, dtype=np.bool_)
 
         # synthesis
+
         logging.info('Synthesizing')
-        reconstruct, harmonic, aper_uv, aper_bre = gf.synthesize(
+        _, harmonic, aper_uv, aper_bre = gf.synthesize(
             env_new,
             f0_new,
             mask_new,
@@ -420,6 +426,15 @@ class GooferResampler:
             volume_jitter=self.volume_jitter,
             volume_jitter_strength_harm=self.volume_jitter_strength,
             volume_jitter_strength_breath=self.volume_jitter_strength * 2,
+            add_subharm=self.add_subharm,
+            subharm_weight=self.subharm_weight,
+            subharm_semitones=12,
+            subharm_vibrato=True,
+            subharm_vibrato_rate=75,
+            subharm_vibrato_depth=3,
+            subharm_vibrato_delay=0.01,
+            cut_subharm_below_f0=False,
+            subharm_f0_jitter=0,
         )
 
         # apply tension if not zero
