@@ -433,7 +433,7 @@ class GooferResampler:
             subharm_vibrato_rate=75,
             subharm_vibrato_depth=3,
             subharm_vibrato_delay=0.01,
-            cut_subharm_below_f0=True,
+            cut_subharm_below_f0=False,
             subharm_f0_jitter=0,
         )
 
