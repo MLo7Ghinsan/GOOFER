@@ -277,12 +277,15 @@ def apply_f0_jitter(f0_array, sr, speed=40.0, strength=0.04, seed=None):
     jitter = 1.0 + noise * strength
     return jitter
 
-def add_subharms(f0_interp, sr, subharm_weight=0.5, subharm_semitones=-12):
+def add_subharms(f0_interp, sr, subharm_weight=0.5, subharm_semitones=-12, voicing_mask=None):
     sub_pulse = np.zeros_like(f0_interp)
     phase = 0.0
     last_f0 = 160.0  # fallback
     pulse_cache = {}
     phase_tracker = {}
+
+    if voicing_mask is None:
+        voicing_mask = (f0_interp > 0)
 
     if not isinstance(subharm_semitones, (list, tuple, np.ndarray)):
         subharm_semitones = [subharm_semitones]
@@ -294,8 +297,9 @@ def add_subharms(f0_interp, sr, subharm_weight=0.5, subharm_semitones=-12):
 
     for i in range(len(f0_interp)):
         f0 = f0_interp[i]
-        if f0 > 0:
-            last_f0 = f0
+        if voicing_mask[i] <= 0 or f0 <= 0:
+            continue
+        last_f0 = f0
         for ratio in ratios:
             sub_f0 = last_f0 * ratio
             if sub_f0 < 1e-2:
@@ -312,17 +316,19 @@ def add_subharms(f0_interp, sr, subharm_weight=0.5, subharm_semitones=-12):
                 end = min(len(sub_pulse), start + len(lf_pulse))
                 sub_pulse[start:end] += lf_pulse[:end - start]
                 phase_tracker[ratio] -= 1.0
-    
-    sub_pulse /= np.max(np.abs(sub_pulse) + 1e-6)
+
+    sub_pulse *= voicing_mask
+    sub_pulse /= (np.max(np.abs(sub_pulse)) + 1e-6)
     return sub_pulse * subharm_weight
 
-def add_multiple_subharms(f0_interp, sr, semitone_list=[-12, 12], weights=None):
+def add_multiple_subharms(f0_interp, sr, semitone_list=[-12, 12], weights=None, voicing_mask=None):
     if weights is None:
         weights = [1.0 / len(semitone_list)] * len(semitone_list)
     
     total = np.zeros_like(f0_interp)
     for semi, weight in zip(semitone_list, weights):
-        total += add_subharms(f0_interp, sr, subharm_weight=weight, subharm_semitones=semi)
+        total += add_subharms(f0_interp, sr, voicing_mask=voicing_mask,
+                              subharm_weight=weight, subharm_semitones=semi)
     return total
 
 def apply_subharm_vibrato(f0_interp, sr, vibrato_rate=6.0, vibrato_depth=0.1, vibrato_delay=0.1, seed=None):
@@ -574,7 +580,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
             f0_for_subharms = f0_for_subharms
             
         sub_pulse = add_subharms(
-            f0_for_subharms, sr,
+            f0_for_subharms, sr, voicing_mask=voicing_mask,
             subharm_weight=subharm_weight,
             subharm_semitones=subharm_semitones
         )
@@ -593,7 +599,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     # Smooth sigmoid mask per frame
     sharpness = 5
     highpass_mask = 1.0 / (1.0 + np.exp(-(freqs - cutoff) / sharpness))
-    
+
     if cut_subharm_below_f0:
         S_harm = S_harm * highpass_mask
     if env_spec.shape[1] > S_harm.shape[1]:
