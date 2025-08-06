@@ -2,9 +2,93 @@ import numpy as np
 import soundfile as sf
 import os
 import parselmouth
-from scipy.interpolate import interp1d
-from scipy.ndimage import gaussian_filter1d, gaussian_filter
-from scipy.signal import medfilt
+
+def interp1d(x, y, kind='linear', fill_value='extrapolate'):
+    if kind != 'linear':
+        raise ValueError("Only 'linear' interpolation is supported.") # im lazy, duh
+
+    x = np.asarray(x)
+    y = np.asarray(y)
+    
+    def interpolator(x_new):
+        x_new = np.asarray(x_new)
+        y_new = np.zeros_like(x_new, dtype=y.dtype)
+        
+        # find indices for interpolation
+        indices = np.searchsorted(x, x_new, side='left')
+        indices = np.clip(indices, 1, len(x) - 1)
+        # identify points within bounds
+        within_bounds = (x_new >= x[0]) & (x_new <= x[-1])
+
+        # linear interpolation for points within bounds
+        if np.any(within_bounds):
+            x0 = x[indices[within_bounds] - 1]
+            x1 = x[indices[within_bounds]]
+            y0 = y[indices[within_bounds] - 1]
+            y1 = y[indices[within_bounds]]
+            # we hate division by zero
+            denom = x1 - x0
+            denom = np.where(denom == 0, 1e-10, denom)
+            # linear interpolation
+            slope = (y1 - y0) / denom
+            y_new[within_bounds] = y0 + slope * (x_new[within_bounds] - x0)
+        
+        # handle points outside bounds based on fill_value
+        if fill_value != 'extrapolate':
+            # if fill_value is a number likr lets say 0), set out-of-bounds values to it
+            try:
+                fill_val = float(fill_value)
+                y_new[~within_bounds] = fill_val
+            except (TypeError, ValueError):
+                raise ValueError("fill_value must be 'extrapolate' or a number")
+        else:
+            # extrapolate for points outside bounds
+            # left side: use slope from first two points
+            left_mask = x_new < x[0]
+            if np.any(left_mask):
+                slope_left = (y[1] - y[0]) / (x[1] - x[0] + 1e-10)
+                y_new[left_mask] = y[0] + slope_left * (x_new[left_mask] - x[0])
+            # right side: use slope from last two points
+            right_mask = x_new > x[-1]
+            if np.any(right_mask):
+                slope_right = (y[-1] - y[-2]) / (x[-1] - x[-2] + 1e-10)
+                y_new[right_mask] = y[-1] + slope_right * (x_new[right_mask] - x[-1])
+            # left side, right side- ha wo tsu k ida shi te papa pa
+        return y_new
+    return interpolator
+
+def gaussian_filter1d(input_array, sigma, axis=-1, truncate=4.0):
+    # clamp to something reasonable
+    sigma = max(float(sigma), 1e-6)
+    # calculate kernel
+    radius = int(truncate * sigma + 0.5)
+    t = np.arange(-radius, radius + 1)
+    kernel = np.exp(-0.5 * (t / sigma) ** 2)
+    kernel /= kernel.sum()
+
+    # for easier handling...
+    input_array = np.moveaxis(np.asarray(input_array), axis, -1)
+    
+    # pad reflectively to avoid crusty edges
+    padded = np.pad(input_array, 
+                    [(0, 0)] * (input_array.ndim - 1) + [(radius, radius)],
+                    mode='reflect')
+
+    # apply convolution manually for each 1D slice along last axis
+    output = np.apply_along_axis(lambda m: np.convolve(m, kernel, mode='valid'), -1, padded)
+
+    return np.moveaxis(output, -1, axis) # gotta move axis back where it came from
+
+def gaussian_filter(input_array, sigma):
+    input_array = np.asarray(input_array)
+    if input_array.ndim != 2:
+        raise ValueError("gaussian_filter expects a 2D array.")
+    
+    sigma = tuple(max(s, 1e-6) for s in sigma)
+    
+    output = gaussian_filter1d(input_array, sigma[0], axis=0)
+    output = gaussian_filter1d(output, sigma[1], axis=1)
+    return output
 
 def load_features(path):
     data = np.load(path, allow_pickle=True)
@@ -36,9 +120,9 @@ def f0_estimate(snd, fr_duration, f0_min=75, f0_max=950, voice_thresh=0.63, sil_
                         time_step=fr_duration,
                         pitch_floor=f0_min,
                         pitch_ceiling=f0_max,
-                        voicing_threshold=voice_thresh,
-                        silence_threshold=sil_thresh,
-                        voiced_unvoiced_cost=voice_cost
+                        #voicing_threshold=voice_thresh,
+                        #silence_threshold=sil_thresh,
+                        #voiced_unvoiced_cost=voice_cost
                         )
 
     return pitch.selected_array['frequency']
@@ -127,7 +211,8 @@ def stretch_feature(feature, stretch, kind='linear'):
     if feature.ndim == 1:
         x_old = np.linspace(0, 1, len(feature))
         x_new = np.linspace(0, 1, target_len)
-        return interp1d(x_old, feature, kind=kind, fill_value='extrapolate')(x_new)
+        interp_func = interp1d(x_old, feature, kind=kind, fill_value='extrapolate')
+        return interp_func(x_new)
     elif feature.ndim == 2:
         x_old = np.linspace(0, 1, feature.shape[1])
         x_new = np.linspace(0, 1, target_len)
@@ -290,7 +375,7 @@ def warp_env_by_formants(env, orig_formants, shifted_formants, sr):
         freq_map_src = [0.0] + freq_map_src + [sr / 2]
         freq_map_dst = [0.0] + freq_map_dst + [sr / 2]
 
-        warp_func = interp1d(freq_map_dst, freq_map_src, kind='linear', bounds_error=False, fill_value='extrapolate')
+        warp_func = interp1d(freq_map_dst, freq_map_src, kind='linear', fill_value='extrapolate')
         warped_freqs = warp_func(freqs)
         interp_func = interp1d(freqs, env[:, t], kind='linear', fill_value='extrapolate')
         warped_env[:, t] = interp_func(warped_freqs)
@@ -336,7 +421,7 @@ def extract_features(y, sr, n_fft=1024, hop_length=256,
     f0_track = fix_f0_gaps(f0_track, f0_merge_range)
 
     times_f0 = np.linspace(0, len(y)/sr, num=len(f0_track))
-    interp_func = interp1d(times_f0, f0_track, kind='linear', fill_value=0, bounds_error=False)
+    interp_func = interp1d(times_f0, f0_track, kind='linear', fill_value=0)
     times_samples = np.linspace(0, len(y)/sr, num=len(y))
     f0_interp = interp_func(times_samples)
     f0_interp = np.clip(f0_interp, 1e-5, 2000)
@@ -387,7 +472,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
             voicing_mask = np.concatenate([
                 voicing_mask[:start_idx],
-                stretch_feature(voicing_mask[start_idx:end_idx], stretch_factor, kind='nearest'),
+                stretch_feature(voicing_mask[start_idx:end_idx], stretch_factor, kind='linear'),
                 voicing_mask[end_idx:]
             ])
 
@@ -409,7 +494,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
         else:
             f0_interp = stretch_feature(f0_interp, stretch_factor)
             env_spec = stretch_feature(env_spec, stretch_factor)
-            voicing_mask = stretch_feature(voicing_mask, stretch_factor, kind='nearest')
+            voicing_mask = stretch_feature(voicing_mask, stretch_factor, kind='linear')
             env_spec4breathiness = stretch_feature(env_spec4breathiness, stretch_factor)
 
         new_len = len(f0_interp)
@@ -500,11 +585,25 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     raw_noise = generate_noise(noise_type, len(y), sr)
     S_noise = stft(raw_noise, n_fft=n_fft, hop_length=hop_length, window=window)
 
+    # dynamic highpass based on F0 for better breathiness ig
+    freqs = np.fft.rfftfreq(n_fft, 1 / sr).reshape(-1, 1)  # (n_freq, 1)
+    f0_env_frames = f0_interp[::hop_length]
+    f0_env_frames = np.pad(f0_env_frames, (0, S_noise.shape[1] - len(f0_env_frames)), mode='edge')
+    cutoff = f0_env_frames.reshape(1, -1)  # (1, n_frames)
+
+    # Smooth sigmoid mask per frame
+    highpass_mask = (freqs >= cutoff)
+
+    # Apply to noise
+    S_noise_filtered = S_noise * highpass_mask
+
     env_noise = match_env_frames(env_spec4breathiness, S_noise.shape[1])
 
     mag_noise = np.abs(S_noise) + 1e-8
-    S_breath = (S_noise / mag_noise) * env_noise
     S_uv = (S_noise / mag_noise) * env_noise
+
+    mag_noise_breath = np.abs(S_noise_filtered) + 1e-8
+    S_breath = (S_noise_filtered  / mag_noise_breath) * env_noise
 
     if apply_brightness:
         brightness_curve = create_brightness_curve(S_breath.shape[0], sr, 3500, 5000, gain_db=20.0)
@@ -553,7 +652,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
 if __name__ == "__main__":
 
-    input_file = 'solaria.mp3'
+    input_file = 'pjs001_singing_seg001.wav'
 
     noise_type = 'white'  #'white' or 'brown' or 'pink'
 
@@ -569,17 +668,17 @@ if __name__ == "__main__":
     F4 = 1.0
 
     volume_jitter = False #only on voiced
-    volume_vibrato=True
+    volume_vibrato= False
     volume_jitter_speed=128
     volume_jitter_strength_harm = 60
     volume_jitter_strength_breath = 10
     
-    subharm_vibrato = True
+    subharm_vibrato = False
     subharm_vibrato_rate=36
     subharm_vibrato_depth=1.5
     subharm_vibrato_delay=0.01
 
-    add_subharm = True
+    add_subharm = False
     subharm_weight=3.0
 
     f0_jitter = False
@@ -620,7 +719,7 @@ if __name__ == "__main__":
     sf.write(unvoiced, aper_uv, sr)
     print(f'Reconstructed audio saved: {reconstruct_wav}')
 
-    save_feature = True
+    save_feature = False
     if save_feature:
         env_spec = env_spec.astype(np.float16)
         f0_interp = f0_interp.astype(np.float16)
