@@ -331,7 +331,7 @@ def apply_subharm_vibrato(f0_interp, sr, vibrato_rate=6.0, vibrato_depth=0.1, vi
     t = np.arange(len(f0_interp)) / sr
     
     phase = np.random.uniform(0, 2*np.pi) if seed else 0 # create sinusoid
-    vibrato = np.sin(2 * np.pi * vibrato_rate * t + phase) * subharm_weight
+    vibrato = np.sin(2 * np.pi * vibrato_rate * t + phase)# * subharm_weight
     
     fade_in_samples = int(vibrato_delay * sr) # fade
     fade_in = np.linspace(0, 1, fade_in_samples)
@@ -478,15 +478,6 @@ def synthesize(env_spec, f0_interp, voicing_mask,
         ind_formant_shifted = transpose_formants(formants, ind_formant_ratios)
         env_spec = warp_env_by_formants(env_spec, formants, ind_formant_shifted, sr)
 
-    # dynamic highpass based on F0 for better breathiness ig
-    freqs = np.fft.rfftfreq(n_fft, 1 / sr).reshape(-1, 1)  # (n_freq, 1)
-    f0_env_frames = f0_interp[::hop_length]
-    f0_env_frames = np.pad(f0_env_frames, (0, n_frames - len(f0_env_frames)), mode='edge')
-    cutoff = f0_env_frames.reshape(1, -1)  # (1, n_frames)
-
-    # Smooth sigmoid mask per frame
-    sharpness = 5
-    highpass_mask = 1.0 / (1.0 + np.exp(-(freqs - cutoff) / sharpness))
     if formant_shift != 1.0:
         env_spec = shift_formants(env_spec, formant_shift, sr)
 
@@ -577,7 +568,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
                 f0_for_subharms, sr,
                 vibrato_rate=subharm_vibrato_rate,
                 vibrato_depth=subharm_vibrato_depth,
-                vibrato_delay=subharm_vibrato_delay,
+                vibrato_delay=subharm_vibrato_delay
             )
         else:
             f0_for_subharms = f0_for_subharms
@@ -591,6 +582,18 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
     S_harm = stft(pulse, n_fft=n_fft, hop_length=hop_length, window=window)
 
+    # dynamic highpass based on F0 for better breathiness ig
+    freqs = np.fft.rfftfreq(n_fft, 1 / sr).reshape(-1, 1)  # (n_freq, 1)
+    n_frames_harm = S_harm.shape[1]
+    f0_env_frames = f0_interp[::hop_length]
+    f0_env_frames = np.pad(f0_env_frames, (0, n_frames_harm - len(f0_env_frames)), mode='edge')
+    f0_env_frames = f0_env_frames[:n_frames_harm]
+    cutoff = f0_env_frames.reshape(1, -1)
+
+    # Smooth sigmoid mask per frame
+    sharpness = 5
+    highpass_mask = 1.0 / (1.0 + np.exp(-(freqs - cutoff) / sharpness))
+    
     if cut_subharm_below_f0:
         S_harm = S_harm * highpass_mask
     if env_spec.shape[1] > S_harm.shape[1]:
@@ -689,7 +692,7 @@ if __name__ == "__main__":
 
     stretch_factor = 1.0
 
-    pitch_shift = 1.0
+    pitch_shift = 0.75
 
     formant_shift = 1.0
 
@@ -704,14 +707,14 @@ if __name__ == "__main__":
     volume_jitter_strength_harm = 60
     volume_jitter_strength_breath = 10
     
-    subharm_vibrato = False
-    subharm_vibrato_rate=36
-    subharm_vibrato_depth=1.5
+    subharm_vibrato = True
+    subharm_vibrato_rate=75#36
+    subharm_vibrato_depth=3
     subharm_vibrato_delay=0.01
 
     add_subharm = True
-    subharm_weight=1 #3.0
-    subharm_semitones=-12 # or like a list for multiple subharms lets say [-12, 12]
+    subharm_weight=1.5 #3.0
+    subharm_semitones=1.5 # or like a list for multiple subharms lets say [-12, 12]
     cut_subharm_below_f0=True
     subharm_f0_jitter=0
 
