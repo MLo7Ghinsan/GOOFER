@@ -6,9 +6,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import soundfile as sf
-import scipy.interpolate as interp
-from scipy.interpolate import Akima1DInterpolator
-from scipy.signal import butter, sosfilt, sosfilt_zi
 
 import GOOFER as gf
 
@@ -69,7 +66,34 @@ def dynamic_butter_filter(signal, f0, sr, cutoff_factor, order=4, btype='lowpass
     n_segments = len(signal) // segment_size
     remainder = len(signal) % segment_size
     out = np.zeros_like(signal)
-    zi = None
+    
+    if btype == 'lowpass':
+        zi = [0.0] * order
+
+        def apply_filter(x, cutoff, prev):
+            alpha = (2 * np.pi * cutoff) / (2 * np.pi * cutoff + sr)
+            y = np.empty_like(x)
+            y_prev = prev
+            for idx, xn in enumerate(x):
+                y_prev = y_prev + alpha * (xn - y_prev)
+                y[idx] = y_prev
+            return y, y_prev
+
+    else: # highpass yass
+        zi = [(0.0, None)] * order # (prev_y, prev_x)
+
+        def apply_filter(x, cutoff, prev_state):
+            prev_y, prev_x = prev_state
+            alpha = sr / (2 * np.pi * cutoff + sr)
+            y = np.empty_like(x)
+            if prev_x is None:
+                prev_x = x[0]
+            for idx, xn in enumerate(x):
+                prev_y = alpha * (prev_y + xn - prev_x)
+                y[idx] = prev_y
+                prev_x = xn
+            return y, (prev_y, prev_x)
+            
     for i in range(n_segments + (1 if remainder else 0)):
         if i < n_segments:
             start = i * segment_size
@@ -91,15 +115,16 @@ def dynamic_butter_filter(signal, f0, sr, cutoff_factor, order=4, btype='lowpass
                 out[start:end] = seg_signal
                 continue
             normal_fc = min(normal_fc, 0.99)
-        elif btype == 'highpass':
-            if normal_fc <= 0.01:
-                out[start:end] = seg_signal
-                continue
+            cutoff = normal_fc * nyq
+            filtered = seg_signal
+            for j in range(order):
+                filtered, zi[j] = apply_filter(filtered, cutoff, zi[j])
+        else: # highpass yass
             normal_fc = max(normal_fc, 20 / nyq)
-        sos = butter(order, normal_fc, btype=btype, output='sos')
-        if zi is None:
-            zi = sosfilt_zi(sos) * seg_signal[0] if len(seg_signal) > 0 else np.zeros((sos.shape[0], 2))
-        filtered, zi = sosfilt(sos, seg_signal, zi=zi)
+            cutoff = normal_fc * nyq
+            filtered = seg_signal
+            for j in range(order):
+                filtered, zi[j] = apply_filter(filtered, cutoff, zi[j])
         out[start:end] = filtered
     return out
     
@@ -398,7 +423,7 @@ class GooferResampler:
         tick_dt    = 60.0 / (self.tempo * 96.0)
         t_pitch    = np.arange(len(pitch_semi)) * tick_dt
 
-        pitch_interp = Akima1DInterpolator(t_pitch, pitch_semi)
+        pitch_interp = gf.interp1d(t_pitch, pitch_semi, kind='linear', fill_value='extrapolate')
         t_clamped = np.clip(t_samples, t_pitch[0], t_pitch[-1])
         midi_curve = pitch_interp(t_clamped)
         f0_new = mask_new * midi_to_hz(midi_curve)
@@ -446,7 +471,7 @@ class GooferResampler:
                         abs_ten = abs(self.tension)
                         order = int(np.round(1 + (abs_ten * 4)))
                         order = np.clip(order, 1, 6)
-                        lp_factor = 2.0 - abs_ten * 1.0
+                        lp_factor = 2.0 - abs_ten * 0.5
                         harmonic = dynamic_butter_filter(harmonic, f0_new, sr, lp_factor, order=order, btype='lowpass')
                         aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, abs_ten, order=4, btype='highpass')
                     else:
