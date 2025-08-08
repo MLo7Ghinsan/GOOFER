@@ -62,72 +62,96 @@ def midi_to_hz(m):
     return 440.0 * 2**((m-69)/12)
 
 def dynamic_butter_filter(signal, f0, sr, cutoff_factor, order=4, btype='lowpass'):
-    segment_size = 256
-    n_segments = len(signal) // segment_size
-    remainder = len(signal) % segment_size
     out = np.zeros_like(signal)
-    
+
+    if np.any(f0 > 0):
+        f0_smooth = np.convolve(f0, np.ones(5) / 5, mode='same')
+    else:
+        f0_smooth = f0.copy()
+
     if btype == 'lowpass':
         zi = [0.0] * order
-
         def apply_filter(x, cutoff, prev):
             alpha = (2 * np.pi * cutoff) / (2 * np.pi * cutoff + sr)
             y = np.empty_like(x)
             y_prev = prev
-            for idx, xn in enumerate(x):
+            for i, xn in enumerate(x):
                 y_prev = y_prev + alpha * (xn - y_prev)
-                y[idx] = y_prev
+                y[i] = y_prev
             return y, y_prev
-
-    else: # highpass yass
-        zi = [(0.0, None)] * order # (prev_y, prev_x)
-
+    else:
+        zi = [(0.0, None)] * order
         def apply_filter(x, cutoff, prev_state):
             prev_y, prev_x = prev_state
             alpha = sr / (2 * np.pi * cutoff + sr)
             y = np.empty_like(x)
             if prev_x is None:
                 prev_x = x[0]
-            for idx, xn in enumerate(x):
+            for i, xn in enumerate(x):
                 prev_y = alpha * (prev_y + xn - prev_x)
-                y[idx] = prev_y
+                y[i] = prev_y
                 prev_x = xn
             return y, (prev_y, prev_x)
-            
-    for i in range(n_segments + (1 if remainder else 0)):
-        if i < n_segments:
-            start = i * segment_size
-            end = start + segment_size
+
+    idx = 0
+    while idx < len(signal):
+        seg_f0 = f0_smooth[idx:idx+512]
+        local_f0 = np.mean(seg_f0[seg_f0 > 0]) if np.any(seg_f0 > 0) else 0
+
+        if local_f0 > 0:
+            min_mult = 1.0
+            max_mult = 20.0
+            norm = np.clip((local_f0 - 16) / (4186 - 16), 0.0, 1.0)
+            multiplier = max_mult - norm * (max_mult - min_mult)
+            period = sr / local_f0
+            seg_size = int(period * multiplier)
         else:
-            start = n_segments * segment_size
-            end = len(signal)
-        seg_signal = signal[start:end]
-        seg_f0 = f0[start:end]
-        mean_f0 = np.mean(seg_f0[seg_f0 > 0])
+            seg_size = 256
+
+        seg_size = max(64, min(seg_size, 2048))
+
+        overlap_size = seg_size // 2
+        fade_in = np.linspace(0, 1, overlap_size)
+        fade_out = np.linspace(1, 0, overlap_size)
+
+        end = min(idx + seg_size, len(signal))
+        seg_signal = signal[idx:end]
+        seg_f0_vals = f0_smooth[idx:end]
+        mean_f0 = np.mean(seg_f0_vals[seg_f0_vals > 0]) if np.any(seg_f0_vals > 0) else 0
+
         if np.isnan(mean_f0) or mean_f0 <= 0:
-            out[start:end] = seg_signal
-            continue
-        fc = mean_f0 * cutoff_factor
-        nyq = 0.5 * sr
-        normal_fc = fc / nyq
-        if btype == 'lowpass':
-            if normal_fc >= 0.99:
-                out[start:end] = seg_signal
-                continue
-            normal_fc = min(normal_fc, 0.99)
-            cutoff = normal_fc * nyq
             filtered = seg_signal
-            for j in range(order):
-                filtered, zi[j] = apply_filter(filtered, cutoff, zi[j])
-        else: # highpass yass
-            normal_fc = max(normal_fc, 20 / nyq)
-            cutoff = normal_fc * nyq
-            filtered = seg_signal
-            for j in range(order):
-                filtered, zi[j] = apply_filter(filtered, cutoff, zi[j])
-        out[start:end] = filtered
+        else:
+            fc = mean_f0 * cutoff_factor
+            nyq = 0.5 * sr
+            if btype == 'lowpass':
+                normal_fc = min(fc / nyq, 0.99)
+                cutoff = normal_fc * nyq
+                filtered = seg_signal
+                for j in range(order):
+                    filtered, zi[j] = apply_filter(filtered, cutoff, zi[j])
+            else:
+                normal_fc = max(fc / nyq, 20 / nyq)
+                cutoff = normal_fc * nyq
+                filtered = seg_signal
+                for j in range(order):
+                    filtered, zi[j] = apply_filter(filtered, cutoff, zi[j])
+
+        if idx > 0:
+            cross_len = min(overlap_size, len(filtered), len(out) - idx)
+            out[idx:idx+cross_len] = (
+                out[idx:idx+cross_len] * fade_out[:cross_len] +
+                filtered[:cross_len] * fade_in[:cross_len]
+            )
+            if cross_len < len(filtered):
+                out[idx+cross_len:idx+len(filtered)] = filtered[cross_len:]
+        else:
+            out[idx:end] = filtered
+
+        idx += seg_size - overlap_size
+
     return out
-    
+
 def is_audio_file(file):
     return file.suffix.lower() in ['.wav', '.flac', '.aiff', '.aif', '.mp3']
 
@@ -471,7 +495,7 @@ class GooferResampler:
                         abs_ten = abs(self.tension)
                         order = int(np.round(1 + (abs_ten * 4)))
                         order = np.clip(order, 1, 6)
-                        lp_factor = 2.0 - abs_ten * 0.2
+                        lp_factor = 2.0 - abs_ten * 0.02
                         harmonic = dynamic_butter_filter(harmonic, f0_new, sr, lp_factor, order=order, btype='lowpass')
                         aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, abs_ten, order=4, btype='highpass')
                     else:
