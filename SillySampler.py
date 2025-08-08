@@ -471,7 +471,7 @@ class GooferResampler:
                         abs_ten = abs(self.tension)
                         order = int(np.round(1 + (abs_ten * 4)))
                         order = np.clip(order, 1, 6)
-                        lp_factor = 2.0 - abs_ten * 0.5
+                        lp_factor = 2.0 - abs_ten * 0.2
                         harmonic = dynamic_butter_filter(harmonic, f0_new, sr, lp_factor, order=order, btype='lowpass')
                         aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, abs_ten, order=4, btype='highpass')
                     else:
