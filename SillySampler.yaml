@@ -1,4 +1,13 @@
 expressions:
+  cent:
+    name: Pitch Offset
+    abbr: foff
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: t
   SF1:
     name: Scale Formant (F1) (SillySampler)
     abbr: S_F1
