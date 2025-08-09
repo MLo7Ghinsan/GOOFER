@@ -16,7 +16,11 @@ ___
 | `sh` | `0`-`100`     | `0`   | F0 jitter (pitch instability). Harsh vocal effect |
 | `sr` | `0`-`100`     | `0`   | Volume jitter (voiced only). Rough vocal effect |
 | `st` | `0`-`100`     | `0`   | Tension effect (attempt to) |
-| `sg` | `0`-`100`     | `0`   | growl effect (attempt to) |
+| `sg` | `0`-`100`     | `0`   | Growl effect (attempt to) |
+| `sd` | `0`-`100`     | `0`   | Noise jitter. Dry throat (kinda) effect |
+| `sj` | `0`-`100`     | `0`   | Blend mix of F0 jitter + clean harmonics, Rasp (kinda) effect |
+| `sa` | `0`-`100`     | `0`   | Blend mix of full noise. Whisper growl effect |
+| `su` | `0`-`100`     | `0`   | Subharmonics strength. |
 | `L`  | `0`, `1`, `2` | `0`   | Sustain behavior: <br> `L0` = concat loop <br> `L1` = averaged mirror loop <br> `L2` = stretch |
 | `R`  | `0`, `1`      | `0`   | Reverse sample: <br> `R0` = normal <br> `R1` = reversed |
 | vf<br>vh<br>vl | -100-100<br>0-100<br>0-100 | 0<br>50<br>15 | Vocal fry: <br>`vf` = amount (positive = start, negative = end) <br>`vh` = base pitch in Hz <br>`vl` = pitch slide amount |
