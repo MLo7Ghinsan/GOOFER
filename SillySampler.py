@@ -517,6 +517,126 @@ class GooferResampler:
         midi_curve = pitch_interp(t_clamped)
         f0_new = mask_new * midi_to_hz(midi_curve)
 
+        ### FRY STUFF 1
+        vf = float(self.flags.get('vf', 0)) # amount & direction
+        vh_val = float(self.flags.get('vh', 50)) # fry base Hz
+        vh_val = max(1.0, vh_val)
+        vl = float(self.flags.get('vl', 15)) # glide % [0..100]
+        vl = np.clip(vl, 0.0, 100.0)
+
+        if vf != 0:
+            vf = float(np.clip(vf, -100.0, 100.0))
+
+            n   = len(f0_new)
+            mid = n // 2
+            pos_cap = mid
+            neg_cap = n - mid
+
+            if vf > 0:
+                # fry from start
+                L = int(round(pos_cap * (vf / 100.0)))
+                if L > 0:
+                    glide_len = int(round(L * (vl / 100.0)))
+                    glide_len = np.clip(glide_len, 0, L)
+
+                    const_len = L - glide_len
+
+                    if const_len > 0:
+                        s_const = slice(0, const_len)
+                        f0_new[s_const] = vh_val * (mask_new[s_const] > 0)
+
+                    if glide_len > 0:
+                        s_glide = slice(const_len, L)
+                        w = np.linspace(0.0, 1.0, glide_len, endpoint=True)
+                        target = f0_new[s_glide]
+                        base   = vh_val * (mask_new[s_glide] > 0)
+                        f0_new[s_glide] = (1.0 - w) * base + w * target
+
+            elif vf < 0:
+                # fry from end
+                L = int(round(neg_cap * (abs(vf) / 100.0)))
+                if L > 0:
+                    glide_len = int(round(L * (vl / 100.0)))
+                    glide_len = np.clip(glide_len, 0, L)
+
+                    const_len = L - glide_len
+                    start = n - L
+
+                    if glide_len > 0:
+                        s_glide = slice(start, start + glide_len)
+                        w = np.linspace(1.0, 0.0, glide_len, endpoint=True)
+                        target = f0_new[s_glide]
+                        base   = vh_val * (mask_new[s_glide] > 0)
+                        f0_new[s_glide] = (1.0 - w) * base + w * target
+
+                    if const_len > 0:
+                        s_const = slice(start + glide_len, n)
+                        f0_new[s_const] = vh_val * (mask_new[s_const] > 0)
+
+        # fry mask
+        self._fry_mask = None
+        if vf != 0:
+            n = len(f0_new)
+            mid = n // 2
+            if vf > 0:
+                L = int(round(mid * (vf / 100.0)))
+                start_i, end_i = 0, max(0, min(n, L))
+            else:
+                L = int(round((n - mid) * (abs(vf) / 100.0)))
+                start_i, end_i = max(0, n - L), n
+
+            if end_i > start_i:
+                fry_mask = np.zeros(n, dtype=np.float32)
+                fry_mask[start_i:end_i] = 1.0
+
+                fade = int(0.01 * sr)
+                if fade > 0:
+                    a0 = start_i
+                    a1 = min(end_i, start_i + fade)
+                    if a1 > a0:
+                        fry_mask[a0:a1] *= np.linspace(0.0, 1.0, a1 - a0, endpoint=True)
+                    b0 = max(start_i, end_i - fade)
+                    b1 = end_i
+                    if b1 > b0:
+                        fry_mask[b0:b1] *= np.linspace(1.0, 0.0, b1 - b0, endpoint=True)
+
+                self._fry_mask = fry_mask
+            else:
+                self._fry_mask = None
+
+        # fry formant shift
+        fry_env_shift = 0.92
+
+        if getattr(self, "_fry_mask", None) is not None and env_new.size:
+            fry_mask_samples = self._fry_mask
+            n_bins, n_frames = env_new.shape
+
+            frame_centers = np.minimum(len(fry_mask_samples) - 1,
+                                       (np.arange(n_frames) * hop_length + hop_length // 2)).astype(int)
+            fry_mask_frames = fry_mask_samples[frame_centers]  # (n_frames,)
+
+            frames_to_warp = np.nonzero(fry_mask_frames > 1e-6)[0]
+            if frames_to_warp.size:
+                bin_idx = np.arange(n_bins, dtype=np.float64)
+                for j in frames_to_warp:
+                    w = float(fry_mask_frames[j])
+                    s = 1.0 - w * (1.0 - fry_env_shift)
+                    if abs(s - 1.0) < 1e-6:
+                        continue
+
+                    src = bin_idx / s
+                    src = np.clip(src, 0.0, n_bins - 1.0)
+
+                    lo = np.floor(src).astype(np.int32)
+                    hi = np.minimum(lo + 1, n_bins - 1)
+                    frac = src - lo
+
+                    col = env_new[:, j]
+                    env_new[:, j] = (1.0 - frac) * col[lo] + frac * col[hi]
+
+        ### END OF FRY STUFF 1
+        # dang i hate this
+
         # dummy y-length (goofer doesnt care)
         y_len_new = np.empty(mask_new.shape, dtype=np.bool_)
 
@@ -550,6 +670,24 @@ class GooferResampler:
             cut_subharm_below_f0=False,
             subharm_f0_jitter=0,
         )
+
+        ### FRY STUFF 2
+        if getattr(self, "_fry_mask", None) is not None:
+            fry_mask = self._fry_mask
+
+            hp_keep_above = 200
+            f0_fixed = np.ones_like(f0_new)
+
+            harm_hp = dynamic_butter_filter(harmonic, f0_fixed, sr,
+                                            cutoff_factor=hp_keep_above,
+                                            order=6, btype='highpass')
+            bre_hp  = dynamic_butter_filter(aper_bre, f0_fixed, sr,
+                                            cutoff_factor=hp_keep_above,
+                                            order=6, btype='highpass')
+
+            harmonic = harmonic * (1.0 - fry_mask) + harm_hp * fry_mask
+            aper_bre = aper_bre * (1.0 - fry_mask) + bre_hp  * fry_mask
+        ### END OF FRY STUFF 2
 
         # apply tension if not zero
         if self.tension != 0:
