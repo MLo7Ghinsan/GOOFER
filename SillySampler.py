@@ -152,6 +152,41 @@ def dynamic_butter_filter(signal, f0, sr, cutoff_factor, order=4, btype='lowpass
 
     return out
 
+def stretch_prefix_1d(x, pre_len, factor):
+    n = len(x)
+    if pre_len <= 1 or n <= 1 or abs(factor - 1.0) < 1e-6:
+        return x
+    pre_new = max(1, int(round(pre_len * factor)))
+    n_new = pre_new + (n - pre_len)
+    idx_new = np.arange(n_new, dtype=np.float64)
+    old_pos = np.where(idx_new < pre_new,
+                       idx_new / factor,
+                       (idx_new - pre_new) + pre_len)
+    f = gf.interp1d(np.arange(n, dtype=np.float64), x, kind='linear', fill_value='extrapolate')
+    return f(old_pos)
+
+def stretch_prefix_2d_frames(M, pre_len, factor):
+    n = M.shape[1]
+    if pre_len <= 1 or n <= 1 or abs(factor - 1.0) < 1e-6:
+        return M
+    pre_new = max(1, int(round(pre_len * factor)))
+    n_new = pre_new + (n - pre_len)
+    idx_old = np.arange(n, dtype=np.float64)
+    idx_new = np.arange(n_new, dtype=np.float64)
+    old_pos = np.where(idx_new < pre_new,
+                       idx_new / factor,
+                       (idx_new - pre_new) + pre_len)
+    rows = []
+    for row in M:
+        f = gf.interp1d(idx_old, row, kind='linear', fill_value='extrapolate')
+        rows.append(f(old_pos))
+    return np.stack(rows, axis=0)
+
+def stretch_prefix_formant_track(track, pre_len, factor):
+    arr = np.asarray(track, dtype=np.float64)
+    arr_w = _stretch_prefix_1d(arr, pre_len, factor)
+    return arr_w
+
 def is_audio_file(file):
     return file.suffix.lower() in ['.wav', '.flac', '.aiff', '.aif', '.mp3']
 
@@ -434,7 +469,32 @@ class GooferResampler:
                 formants_new[k] = np.pad(f, (0, pad), mode='edge')
             elif len(f) > target_frames:
                 formants_new[k] = f[:target_frames]
-                
+
+        # convel shits
+        vel_factor = float(2.0 ** (1.0 - (self.velocity / 100.0)))
+        vel_factor = float(np.clip(vel_factor, 0.33, 3.0))
+
+        pre_frames  = env_pre.shape[1]
+        pre_samples = len(f0_pre)
+
+        if abs(vel_factor - 1.0) > 1e-6 and pre_frames > 1 and pre_samples > 1:
+            env_new = stretch_prefix_2d_frames(env_new, pre_frames, vel_factor)
+
+            new_target_frames = env_new.shape[1]
+            formants_new_warped = {}
+            for k, track in formants_new.items():
+                formants_new_warped[k] = stretch_prefix_formant_track(track, pre_frames, vel_factor)
+                f = formants_new_warped[k]
+                if len(f) < new_target_frames:
+                    f = np.pad(f, (0, new_target_frames - len(f)), mode='edge')
+                elif len(f) > new_target_frames:
+                    f = f[:new_target_frames]
+                formants_new_warped[k] = f
+            formants_new = formants_new_warped
+
+            f0_new   = stretch_prefix_1d(f0_new,   pre_samples, vel_factor)
+            mask_new = stretch_prefix_1d(mask_new, pre_samples, vel_factor)
+
         # thank you straycat
         n_total   = len(f0_new)
         t_samples = np.arange(n_total) / sr
