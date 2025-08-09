@@ -18,3 +18,4 @@ ___
 | `sg` | `0`-`100`     | `0`   | growl effect (attempt to) |
 | `L`  | `0`, `1`, `2` | `0`   | Sustain behavior: <br> `L0` = concat loop <br> `L1` = averaged mirror loop <br> `L2` = stretch |
 | `t`  | `-100`-`100`  | `0`   | Pitch offset flag |
+| vf<br>vh<br>vl | -100-100<br>0-100<br>0-100 | 0<br>50<br>15 | Vocal fry: <br>`vf` = amount (positive = start, negative = end) <br>`vh` = base pitch in Hz <br>`vl` = pitch slide amount |
