@@ -488,22 +488,26 @@ class GooferResampler:
 
         # apply tension if not zero
         if self.tension != 0:
-                    abs_ten = abs(self.tension)
-                    lp_factor = 2 - abs_ten
-                    hp_factor = abs_ten
-                    if self.tension < 0:
-                        abs_ten = abs(self.tension)
-                        order = int(np.round(1 + (abs_ten * 4)))
-                        order = np.clip(order, 1, 6)
-                        lp_factor = 2.0 - abs_ten * 0.02
-                        harmonic = dynamic_butter_filter(harmonic, f0_new, sr, lp_factor, order=order, btype='lowpass')
-                        aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, abs_ten, order=4, btype='highpass')
-                    else:
-                        highpassed = dynamic_butter_filter(harmonic, f0_new, sr, hp_factor * 4, order=4, btype='highpass')
-                        boosted = highpassed * (1.0 + abs_ten * 20)
-                        harmonic += boosted
-                        aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, lp_factor / 0.5, order=6, btype='lowpass')
-                        aper_bre *= 1.0 - abs_ten
+            abs_ten = abs(self.tension)
+            lp_factor = 2 - abs_ten
+            hp_factor = abs_ten
+            if self.tension < 0:
+                abs_ten = abs(self.tension)
+                order = int(np.round(1 + (abs_ten * 4)))
+                order = np.clip(order, 1, 6)
+                lp_factor = 2.0 - abs_ten * 0.75
+                rms_before = np.sqrt(np.mean(harmonic**2) + 1e-9)
+                harmonic = dynamic_butter_filter(harmonic, f0_new, sr, lp_factor, order=order, btype='lowpass')
+                rms_after = np.sqrt(np.mean(harmonic**2) + 1e-9)
+                if rms_after > 0:
+                    harmonic *= rms_before / rms_after
+                aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, abs_ten, order=4, btype='highpass')
+            else:
+                highpassed = dynamic_butter_filter(harmonic, f0_new, sr, hp_factor * 4, order=4, btype='highpass')
+                boosted = highpassed * (1.0 + abs_ten * 20)
+                harmonic += boosted
+                aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, lp_factor / 0.5, order=6, btype='lowpass')
+                aper_bre *= 1.0 - abs_ten
 
         # apply volume and write output
         breath_scaled  = aper_bre * self.breathiness_mix
