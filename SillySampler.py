@@ -290,6 +290,9 @@ class GooferResampler:
         self.subharm_weight = (sg_val / 100.0) * 1.5
         self.add_subharm = sg_val > 0
 
+        # reverse flag (R0 = off, R1 = on)
+        self.reverse = self.flags.get('R', 0) == 1
+
         self.render()
 
     def render(self):
@@ -306,6 +309,14 @@ class GooferResampler:
             ylen = len(y)
             gf.save_features(feat, env, f0i, vmask, forms, sr, ylen)
 
+        # Reverse features if flag R is set
+        if self.reverse:
+            logging.info('Reversing features (R flag)')
+            env = env[:, ::-1]
+            f0i = f0i[::-1]
+            vmask = vmask[::-1]
+            forms = {k: list(forms[k])[::-1] for k in forms}
+
         features = (env, f0i, vmask, forms, sr, ylen)
         self.resample(features)
 
@@ -314,15 +325,29 @@ class GooferResampler:
 
         hop_length = 256
 
-        start_sample     = int(self.offset * sr)
-        consonant_sample = start_sample + int(self.consonant * sr)
         sample_length_sec = ylen / sr
 
+        start_sec_base = self.offset
         if self.cutoff < 0:
-            end_sec = self.offset - self.cutoff
+            end_sec_base = self.offset - self.cutoff  # your current logic
         else:
-            end_sec = sample_length_sec - self.cutoff
+            end_sec_base = sample_length_sec - self.cutoff
 
+        # reverse flag
+        if self.reverse:
+            L = end_sec_base - start_sec_base
+            offset_used = sample_length_sec - end_sec_base
+            cutoff_used = sample_length_sec - (offset_used + L)
+        else:
+            offset_used = self.offset
+            cutoff_used = self.cutoff
+
+        start_sample = int(offset_used * sr)
+        consonant_sample = start_sample + int(self.consonant * sr)
+        if cutoff_used < 0:
+            end_sec = offset_used - cutoff_used
+        else:
+            end_sec = sample_length_sec - cutoff_used
         end_sample = int(end_sec * sr)
 
         #debug
@@ -776,7 +801,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v1.5'
+version = 'v1.4'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
