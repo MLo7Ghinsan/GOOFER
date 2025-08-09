@@ -472,7 +472,7 @@ class GooferResampler:
 
         # convel shits
         vel_factor = float(2.0 ** (1.0 - (self.velocity / 100.0)))
-        vel_factor = float(np.clip(vel_factor, 0.33, 3.0))
+        #vel_factor = float(np.clip(vel_factor, 0.33, 3.0)) this was for a test lmao idt ppl will need this
 
         pre_frames  = env_pre.shape[1]
         pre_samples = len(f0_pre)
