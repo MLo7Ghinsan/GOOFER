@@ -184,7 +184,7 @@ def stretch_prefix_2d_frames(M, pre_len, factor):
 
 def stretch_prefix_formant_track(track, pre_len, factor):
     arr = np.asarray(track, dtype=np.float64)
-    arr_w = _stretch_prefix_1d(arr, pre_len, factor)
+    arr_w = stretch_prefix_1d(arr, pre_len, factor)
     return arr_w
 
 def is_audio_file(file):
