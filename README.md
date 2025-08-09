@@ -17,3 +17,4 @@ ___
 | `st` | `0`-`100`     | `0`   | Tension effect (attempt to) |
 | `sg` | `0`-`100`     | `0`   | growl effect (attempt to) |
 | `L`  | `0`, `1`, `2` | `0`   | Sustain behavior: <br> `L0` = concat loop <br> `L1` = averaged mirror loop <br> `L2` = stretch |
+| `t`  | `-100`-`100`  | `0`   | Pitch offset flag |
