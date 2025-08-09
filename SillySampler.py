@@ -258,6 +258,10 @@ class GooferResampler:
         self.volume_jitter = sr_val is not None and sr_val > 0
         self.volume_jitter_strength = (sr_val or 0) / 50.0
 
+        # dryness flag
+        sd_val = self.flags.get('sd', None)
+        self.sd_strength = float(sd_val or 0)
+
         # breathiness flag
         self.breathiness_mix = (self.flags.get('B', 0) + 100) / 100.0
 
@@ -713,6 +717,19 @@ class GooferResampler:
             harmonic = harmonic * (1.0 - fry_mask) + harm_hp * fry_mask
             aper_bre = aper_bre * (1.0 - fry_mask) + bre_hp  * fry_mask
         ### END OF FRY STUFF 2
+
+        # dryness (breath-only jitter)
+        if self.sd_strength > 0:
+            breath_j_env = gf.create_volume_jitter(
+                len(aper_bre), sr,
+                speed=150.0,
+                strength=self.sd_strength / 200.0,
+                vibrato=True,
+            )
+            vmask_smooth = gf.gaussian_filter1d(mask_new.astype(float), sigma=20)
+            aper_bre *= 1.0 + (breath_j_env - 1.0) * vmask_smooth
+            breath_gain = 1.0 + (self.sd_strength / 100.0) * 10
+            aper_bre *= breath_gain
 
         # apply tension if not zero
         if self.tension != 0:
