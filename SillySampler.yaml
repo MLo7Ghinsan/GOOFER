@@ -89,6 +89,33 @@ expressions:
     default_value: 0
     is_flag: true
     flag: sg
+  vfry:
+    name: Vocal Fry (SillySampler)
+    abbr: S_VF
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: vf
+  vfhz:
+    name: Vocal Fry Base Hz (SillySampler)
+    abbr: S_VZ
+    type: Numerical
+    min: 0
+    max: 100
+    default_value: 50
+    is_flag: true
+    flag: vh
+  vfsl:
+    name: Vocal Fry Slide Amount (SillySampler)
+    abbr: S_VL
+    type: Numerical
+    min: 0
+    max: 100
+    default_value: 15
+    is_flag: true
+    flag: vl
   sust:
     name: Sustain Behavior (SillySampler)
     abbr: S_SS
