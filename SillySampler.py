@@ -297,6 +297,15 @@ class GooferResampler:
         # reverse flag (R0 = off, R1 = on)
         self.reverse = self.flags.get('R', 0) == 1
 
+        # growl mix like straycat so its different, ill call it jitter
+        self.growl_mix = np.clip(self.flags.get('sj', 0) or 0, 0, 100) / 100.0
+
+        # aperiodic mix
+        self.aperiodic_mix = np.clip(self.flags.get('sa', 0) or 0, 0, 100) / 100.0
+
+        # subharmonics mix. HP at original F0
+        self.subharm_gain = np.clip(self.flags.get('su', 0) or 0, 0, 100) / 100.0
+
         self.render()
 
     def render(self):
@@ -700,6 +709,46 @@ class GooferResampler:
             subharm_f0_jitter=0,
         )
 
+        # subharm stuff
+        if self.subharm_gain > 0.0:
+            f0_sub = f0_new * 0.5
+
+            _, harmonic_sub, _, _ = gf.synthesize(
+                env_new, f0_sub, mask_new, y_len_new, sr,
+                formant_shift=self.formant_shift,
+                formants=formants_new,
+                F1_shift=self.F1_shift, F2_shift=self.F2_shift,
+                F3_shift=self.F3_shift, F4_shift=self.F4_shift,
+            )
+
+            f0_cut = np.maximum(f0_new, 120.0)
+            harmonic_sub = dynamic_butter_filter(
+                harmonic_sub, f0_cut, sr, cutoff_factor=1.0, order=6, btype='highpass'
+            )
+            harmonic_sub = dynamic_butter_filter(
+                harmonic_sub, f0_cut, sr, cutoff_factor=1.0, order=6, btype='highpass'
+            )
+            harmonic += harmonic_sub * self.subharm_gain
+
+        # straycat-like growl
+        if self.growl_mix > 0.0:
+            rng = np.random.default_rng()
+            noise = rng.normal(loc=0.0, scale=self.growl_mix**2, size=len(f0_new))
+            f0_layer = f0_new * (0.5 * (2.0 ** noise))
+
+            _, harmonic_gw, _, _ = gf.synthesize(
+                env_new, f0_layer, mask_new, y_len_new, sr,
+                formant_shift=self.formant_shift,
+                formants=formants_new,
+                F1_shift=self.F1_shift, F2_shift=self.F2_shift,
+                F3_shift=self.F3_shift, F4_shift=self.F4_shift,
+            )
+
+            f0_for_hp = np.maximum(f0_new, 120.0)
+            harmonic_gw = dynamic_butter_filter(harmonic_gw, f0_for_hp, sr, cutoff_factor=1.0, order=6, btype='highpass')
+            harmonic_gw = dynamic_butter_filter(harmonic_gw, f0_for_hp, sr, cutoff_factor=1.0, order=6, btype='highpass')
+            harmonic = (1.0 - self.growl_mix) * harmonic + self.growl_mix * harmonic_gw
+
         ### FRY STUFF 2
         if getattr(self, "_fry_mask", None) is not None:
             fry_mask = self._fry_mask
@@ -776,6 +825,29 @@ class GooferResampler:
 
         out = custom_mix * self.volume
 
+        if self.aperiodic_mix > 0.0:
+            mask_all_ones = np.ones_like(mask_new, dtype=mask_new.dtype)
+
+            _, _, aper_uv_u, aper_bre_u = gf.synthesize(
+                env_new, f0_new, mask_all_ones, y_len_new, sr,
+                formant_shift=self.formant_shift,
+                formants=formants_new,
+                F1_shift=self.F1_shift, F2_shift=self.F2_shift,
+                F3_shift=self.F3_shift, F4_shift=self.F4_shift,
+                uv_strength=1.0, breath_strength=1.0,
+                noise_transition_smoothness=1,
+            )
+
+            aperiodic_uncorr = aper_uv_u + aper_bre_u
+
+            tgt = 0.98
+            ap_peak = np.max(np.abs(aperiodic_uncorr))
+            if ap_peak > 0:
+                aperiodic_uncorr = aperiodic_uncorr / ap_peak * tgt
+
+            mix = self.aperiodic_mix
+            out = out * (1.0 - mix) + (aperiodic_uncorr * self.volume) * mix
+
         logging.info(f'Writing {self.out_file}')
         sf.write(self.out_file, out, sr)
 
@@ -818,7 +890,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v1.6'
+version = 'v1.7'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
