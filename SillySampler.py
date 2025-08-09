@@ -502,6 +502,11 @@ class GooferResampler:
         # self.bend is cents; /100 = semitones; + self.pitch = absolute MIDI curve
         pitch_semi = self.bend.astype(np.float64) / 100.0 + self.pitch_m
 
+        # pitch offset flag
+        t_cents = self.flags.get('t', 0)
+        if t_cents:
+            pitch_semi = pitch_semi + (t_cents / 100.0)
+
         # tick times: one tick = 1/96 quarter‐note; quarter-note = 60/tempo seconds
         # so tick_dt = 60/(tempo*96)
         tick_dt    = 60.0 / (self.tempo * 96.0)
