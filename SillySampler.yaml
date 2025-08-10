@@ -125,13 +125,13 @@ expressions:
     default_value: 15
     is_flag: true
     flag: vl
-  dryn:
+  thdr:
     name: Dryness (SillySampler)
-    abbr: S_NJ
+    abbr: S_DR
     type: Numerical
     min: 0
     max: 100
-    default_value:0
+    default_value: 0
     is_flag: true
     flag: sd
   rasp:
