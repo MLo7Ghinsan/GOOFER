@@ -58,37 +58,53 @@ def interp1d(x, y, kind='linear', fill_value='extrapolate'):
     return interpolator
 
 def gaussian_filter1d(input_array, sigma, axis=-1, truncate=4.0):
+    arr = np.asarray(input_array)
+    if arr.size == 0 or arr.shape[axis] == 0:
+        return arr.copy()
     # clamp to something reasonable
-    sigma = max(float(sigma), 1e-6)
+    sigma = float(sigma)
+    if sigma <= 0.0:
+        return arr.copy()
     # calculate kernel
     radius = int(truncate * sigma + 0.5)
+    if radius <= 0:
+        return arr.copy()
     t = np.arange(-radius, radius + 1)
     kernel = np.exp(-0.5 * (t / sigma) ** 2)
     kernel /= kernel.sum()
 
-    # for easier handling...
-    input_array = np.moveaxis(np.asarray(input_array), axis, -1)
-    
-    # pad reflectively to avoid crusty edges
-    padded = np.pad(input_array, 
-                    [(0, 0)] * (input_array.ndim - 1) + [(radius, radius)],
+    arr_moved = np.moveaxis(arr, axis, -1)
+
+    padded = np.pad(arr_moved,
+                    [(0, 0)] * (arr_moved.ndim - 1) + [(radius, radius)],
                     mode='reflect')
 
-    # apply convolution manually for each 1D slice along last axis
-    output = np.apply_along_axis(lambda m: np.convolve(m, kernel, mode='valid'), -1, padded)
-
-    return np.moveaxis(output, -1, axis) # gotta move axis back where it came from
+    out_moved = np.apply_along_axis(lambda m: np.convolve(m, kernel, mode='valid'), -1, padded)
+    return np.moveaxis(out_moved, -1, axis) # gotta move axis back where it came from
 
 def gaussian_filter(input_array, sigma):
-    input_array = np.asarray(input_array)
-    if input_array.ndim != 2:
+    arr = np.asarray(input_array)
+    if arr.ndim != 2:
         raise ValueError("gaussian_filter expects a 2D array.")
-    
-    sigma = tuple(max(s, 1e-6) for s in sigma)
-    
-    output = gaussian_filter1d(input_array, sigma[0], axis=0)
-    output = gaussian_filter1d(output, sigma[1], axis=1)
-    return output
+
+    # handle empties safely
+    if arr.size == 0 or arr.shape[0] == 0 or arr.shape[1] == 0:
+        return arr.copy()
+
+    # allow (s0, s1) or single float
+    if isinstance(sigma, (list, tuple)):
+        if len(sigma) != 2:
+            raise ValueError("sigma must be a float or a 2-tuple for 2D arrays.")
+        s0, s1 = (max(float(s), 0.0) for s in sigma)
+    else:
+        s0 = s1 = max(float(sigma), 0.0)
+
+    out = arr
+    if s0 > 0.0:
+        out = gaussian_filter1d(out, s0, axis=0)
+    if s1 > 0.0:
+        out = gaussian_filter1d(out, s1, axis=1)
+    return out
 
 def load_features(path):
     data = np.load(path, allow_pickle=True)
@@ -626,9 +642,13 @@ def synthesize(env_spec, f0_interp, voicing_mask,
             voiced_frames = voiced_frames[:S_harm.shape[1]]
 
         harm_voiced = S_harm[:, :voiced_frames.size].copy()
-        harm_voiced[:, voiced_frames > 0] *= brightness_curve
-        harm_voiced[:, voiced_frames > 0] = gaussian_filter(harm_voiced[:, voiced_frames > 0], sigma=(0.5, 0))
+        mask_v = (voiced_frames > 0)
+        if np.any(mask_v):
+            cols = np.nonzero(mask_v)[0]
+            harm_voiced[:, cols] *= brightness_curve
+            harm_voiced[:, cols] = gaussian_filter(harm_voiced[:, cols], sigma=(0.5, 0))
         S_harm[:, :voiced_frames.size] = harm_voiced
+
     harmonic = istft(S_harm, hop_length=hop_length, window=window, length=len(y))
 
     raw_noise = generate_noise(noise_type, len(y), sr)
@@ -654,8 +674,12 @@ def synthesize(env_spec, f0_interp, voicing_mask,
             voiced_frames = voiced_frames[:S_breath.shape[1]]
 
         breath_voiced = S_breath[:, :voiced_frames.size].copy()
-        breath_voiced[:, voiced_frames > 0] *= brightness_curve
-        breath_voiced[:, voiced_frames > 0] = gaussian_filter(breath_voiced[:, voiced_frames > 0], sigma=(0.5, 0))
+        mask_v = (voiced_frames > 0)
+        if np.any(mask_v):
+            cols = np.nonzero(mask_v)[0]
+            breath_voiced[:, cols] *= brightness_curve
+            breath_voiced[:, cols] = gaussian_filter(breath_voiced[:, cols], sigma=(0.5, 0))
+
         S_breath[:, :voiced_frames.size] = breath_voiced
 
     aper_breath = istft(S_breath, hop_length=hop_length, window=window, length=len(y))
