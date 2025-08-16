@@ -145,10 +145,13 @@ def f0_estimate(snd, fr_duration, f0_min=75, f0_max=950, voice_thresh=0.63, sil_
 
 def stft(x, n_fft=2048, hop_length=512, window=None):
     if window is None:
-        window = np.hanning(n_fft)
+        window = np.hanning(n_fft) ** 0.5
+    x = np.asarray(x, dtype=np.float32)
     pad = n_fft // 2
-    x_padded = np.pad(x, pad, mode='reflect')
-    num_frames = 1 + (len(x_padded) - n_fft) // hop_length
+    x_padded = np.pad(x, pad, mode='reflect') if len(x) >= 2 else np.pad(x, pad, mode='edge')
+    if len(x_padded) < n_fft:
+        x_padded = np.pad(x_padded, (0, n_fft - len(x_padded)), mode='edge')
+    num_frames = max(1, 1 + (len(x_padded) - n_fft) // hop_length)
     frames = np.lib.stride_tricks.as_strided(
         x_padded,
         shape=(n_fft, num_frames),
@@ -157,22 +160,28 @@ def stft(x, n_fft=2048, hop_length=512, window=None):
     frames *= window[:, None]
     return np.fft.rfft(frames, axis=0)
 
-def istft(stft_matrix, hop_length=512, window=None, length=None):
-    n_fft = (stft_matrix.shape[0] - 1) * 2
+def istft(S, hop_length=512, window=None, length=None):
+    n_fft = (S.shape[0] - 1) * 2
     if window is None:
-        window = np.hanning(n_fft)
-    frames = np.fft.irfft(stft_matrix, axis=0)
+        window = np.hanning(n_fft) ** 0.5
+    frames = np.fft.irfft(S, axis=0, n=n_fft)
     pad = n_fft // 2
     expected_len = n_fft + hop_length * (frames.shape[1] - 1)
-    y = np.zeros(expected_len)
-    win_sum = np.zeros(expected_len)
+    y = np.zeros(expected_len, dtype=np.float32)
+    win_sum = np.zeros(expected_len, dtype=np.float32)
     for i in range(frames.shape[1]):
         start = i * hop_length
-        y[start:start+n_fft] += frames[:, i] * window
-        win_sum[start:start+n_fft] += window**2
-    nonzero = win_sum > 1e-8
+        sl = slice(start, start + n_fft)
+        y[sl] += frames[:, i] * window
+        win_sum[sl] += window**2
+    nonzero = win_sum > 1e-9
     y[nonzero] /= win_sum[nonzero]
-    y = y[pad:pad + (length or (len(y)-2*pad))]
+    y = y[pad: expected_len - pad]
+    if length is not None:
+        if len(y) < length:
+            y = np.pad(y, (0, length - len(y)))
+        else:
+            y = y[:length]
     return y
 
 def fix_f0_gaps(f0_array, max_gap=4):
@@ -558,27 +567,35 @@ def synthesize(env_spec, f0_interp, voicing_mask,
         f0_interp *= 1.0 + ((f0_jitter - 1.0) * voicing_mask)
 
     # LF glottal pulse train generator: generate LF pulse train from F0
-    pulse = np.zeros_like(f0_interp)
+    pulse = np.zeros_like(f0_interp, dtype=np.float32)
     phase = 0.0
-    last_f0 = 160.0 # fallback
+    last_f0 = 160.0
     pulse_cache = {}
 
     for i in range(len(f0_interp)):
-        f0 = f0_interp[i]
-        if f0 > 0:
+        f0 = float(f0_interp[i])
+        if f0 > 0.0:
             last_f0 = f0
-        T = 1.0 / last_f0
-        phase += f0_interp[i] / sr
+        phase += f0 / sr
 
         if phase >= 1.0:
-            if last_f0 not in pulse_cache:
-                pulse_cache[last_f0] = lf_model_pulse(T, Ra=0.02, Rg=1.7, Rk=1, sr=sr)
-            lf_pulse = pulse_cache[last_f0]
+            T_samples = int(round(sr / max(last_f0, 1e-6)))
+            T_samples = max(3, T_samples)
+
+            if T_samples not in pulse_cache:
+                T_sec = T_samples / sr
+                pulse_cache[T_samples] = lf_model_pulse(
+                    T_sec, Ra=0.02, Rg=1.7, Rk=1.0, sr=sr
+                ).astype(np.float32)
+
+            lf_pulse = pulse_cache[T_samples]
             start = i
             end = min(len(pulse), start + len(lf_pulse))
-            pulse[start:end] += lf_pulse[:end - start]
+            if end > start:
+                pulse[start:end] += lf_pulse[:end - start]
+
             phase -= 1.0
-            
+
     if add_subharm:
         f0_for_subharms = f0_interp
         if subharm_f0_jitter > 0.0:
@@ -716,14 +733,13 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
 if __name__ == "__main__":
 
-    input_file = 'pjs001_singing_seg001.wav'
+    input_file = 'this-man.mp3'
 
     noise_type = 'white'  #'white' or 'brown' or 'pink'
 
     stretch_factor = 1.0
 
-    pitch_shift = 0.75
-
+    pitch_shift = 1.0
     formant_shift = 1.0
 
     F1 = 1.0
@@ -737,15 +753,15 @@ if __name__ == "__main__":
     volume_jitter_strength_harm = 60
     volume_jitter_strength_breath = 10
     
-    subharm_vibrato = True
+    subharm_vibrato = False
     subharm_vibrato_rate=75#36
     subharm_vibrato_depth=3
     subharm_vibrato_delay=0.01
 
-    add_subharm = True
+    add_subharm = False
     subharm_weight=1.5 #3.0
     subharm_semitones=1.5 # or like a list for multiple subharms lets say [-12, 12]
-    cut_subharm_below_f0=True
+    cut_subharm_below_f0=False
     subharm_f0_jitter=0
 
     f0_jitter = False
@@ -755,9 +771,8 @@ if __name__ == "__main__":
     if y.ndim > 1:
         y = y.mean(axis=1)
 
-
-    n_fft = 2048 // 2
-    hop_length = 512 // 2
+    n_fft = 2048
+    hop_length = n_fft // 4
 
     env_spec, f0_interp, voicing_mask, formants = extract_features(y, sr, n_fft=n_fft, hop_length=hop_length)
 
@@ -782,9 +797,9 @@ if __name__ == "__main__":
     breathiness = f'{input_name}_breathiness.wav'
     unvoiced = f'{input_name}_unvoiced.wav'
     sf.write(reconstruct_wav, reconstruct, sr)
-    sf.write(harmonic_wav, harmonic, sr)
-    sf.write(breathiness, aper_bre, sr)
-    sf.write(unvoiced, aper_uv, sr)
+    #sf.write(harmonic_wav, harmonic, sr)
+    #sf.write(breathiness, aper_bre, sr)
+    #sf.write(unvoiced, aper_uv, sr)
     print(f'Reconstructed audio saved: {reconstruct_wav}')
 
     save_feature = False
