@@ -3,6 +3,9 @@ import soundfile as sf
 import os
 import parselmouth
 
+def rms(x):
+    return float(np.sqrt(np.mean(np.square(x)) + 1e-12))
+    
 def interp1d(x, y, kind='linear', fill_value='extrapolate'):
     if kind != 'linear':
         raise ValueError("Only 'linear' interpolation is supported.") # im lazy, duh
@@ -486,7 +489,7 @@ def extract_features(y, sr, n_fft=1024, hop_length=256,
 def synthesize(env_spec, f0_interp, voicing_mask,
                y, sr, n_fft=1024, hop_length=256,
                stretch_factor=1.0, start_sec=None, end_sec=None,
-               apply_brightness=True, normalize=True, noise_type='white',
+               apply_brightness=True, normalize=False, noise_type='white',
                uv_strength=0.5, breath_strength=0.0375, noise_transition_smoothness=100,
                pitch_shift=1.0, formant_shift=1.0,
                f0_jitter=False, f0_jitter_speed=100, f0_jitter_strength=1.5,
@@ -722,12 +725,17 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     if normalize:
         peak = np.max(np.abs(combined) + 1e-6)
         gain = 1.0 / peak
-        harmonic *= gain
-        aper_uv *= gain
-        aper_bre *= gain
+        harmonic *= gain; aper_uv *= gain; aper_bre *= gain
         reconstruct = combined * gain
     else:
-        reconstruct = combined
+        target_rms = rms(y) if len(y) else 0.1
+        current_rms = rms(combined)
+        if current_rms > 1e-12:
+            loud_gain = target_rms / current_rms
+            harmonic *= loud_gain; aper_uv *= loud_gain; aper_bre *= loud_gain
+            reconstruct = combined * loud_gain
+        else:
+            reconstruct = combined
 
     return reconstruct, harmonic, aper_uv, aper_bre
 
