@@ -9,6 +9,9 @@ import soundfile as sf
 
 import GOOFER as gf
 
+n_fft = 2048
+hop_length = 512
+
 logging.basicConfig(format='%(message)s', level=logging.INFO)
 
 # --- UTAU pitch & flags parsing --------------------------------------------
@@ -318,7 +321,7 @@ class GooferResampler:
             y, sr = sf.read(self.in_file)
             if y.ndim > 1:
                 y = y.mean(axis=1)
-            env, f0i, vmask, forms = gf.extract_features(y, sr)
+            env, f0i, vmask, forms = gf.extract_features(y, sr, n_fft=n_fft, hop_length=hop_length)
             ylen = len(y)
             gf.save_features(feat, env, f0i, vmask, forms, sr, ylen)
 
@@ -335,8 +338,6 @@ class GooferResampler:
 
     def resample(self, features):
         env_spec, f0_interp, voicing_mask, forms, sr, ylen = features
-
-        hop_length = 256
 
         sample_length_sec = ylen / sr
 
@@ -687,6 +688,8 @@ class GooferResampler:
             mask_new,
             y_len_new,
             sr,
+            n_fft=n_fft,
+            hop_length=hop_length,
             formant_shift=self.formant_shift,
             formants=formants_new,
             F1_shift=self.F1_shift,
@@ -715,6 +718,8 @@ class GooferResampler:
 
             _, harmonic_sub, _, _ = gf.synthesize(
                 env_new, f0_sub, mask_new, y_len_new, sr,
+                n_fft=n_fft,
+                hop_length=hop_length,
                 formant_shift=self.formant_shift,
                 formants=formants_new,
                 F1_shift=self.F1_shift, F2_shift=self.F2_shift,
@@ -738,6 +743,8 @@ class GooferResampler:
 
             _, harmonic_gw, _, _ = gf.synthesize(
                 env_new, f0_layer, mask_new, y_len_new, sr,
+                n_fft=n_fft,
+                hop_length=hop_length,
                 formant_shift=self.formant_shift,
                 formants=formants_new,
                 F1_shift=self.F1_shift, F2_shift=self.F2_shift,
@@ -830,6 +837,8 @@ class GooferResampler:
 
             _, _, aper_uv_u, aper_bre_u = gf.synthesize(
                 env_new, f0_new, mask_all_ones, y_len_new, sr,
+                n_fft=n_fft,
+                hop_length=hop_length,
                 formant_shift=self.formant_shift,
                 formants=formants_new,
                 F1_shift=self.F1_shift, F2_shift=self.F2_shift,
