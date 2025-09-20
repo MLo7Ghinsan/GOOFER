@@ -551,25 +551,16 @@ def extract_features(y, sr, n_fft=1024, hop_length=256,
 def synthesize(env_spec, f0_interp, voicing_mask,
                y, sr, n_fft=1024, hop_length=256,
                stretch_factor=1.0, start_sec=None, end_sec=None,
-               apply_brightness=True, normalize=False, noise_type='white',
+               apply_brightness=True, normalize=1.0, noise_type='white',
                uv_strength=0.5, breath_strength=0.0375, noise_transition_smoothness=100,
                pitch_shift=1.0, formant_shift=1.0,
                f0_jitter=False, f0_jitter_speed=100, f0_jitter_strength=1.5,
                volume_jitter=False, volume_vibrato=False, volume_jitter_speed=150, volume_jitter_strength_harm=50, volume_jitter_strength_breath=100,
                add_subharm=False, subharm_semitones=-12, subharm_weight=0.5, subharm_vibrato=False,
-               cut_subharm_below_f0=True, subharm_vibrato_rate=6.0, subharm_vibrato_depth=0.1, subharm_f0_jitter=0,
-               subharm_vibrato_delay=0.1,
-               F1_shift=1.0, F2_shift=1.0, F3_shift=1.0, F4_shift=1.0,
-               formants=None,
-               # --- NEW: roughness params ---
-               roughness_on=False,
-               rough_k_list=(2,3,4),
-               rough_h_list=None,
-               rough_alpha=0.6,
-               rough_hp_fc=320.0,
-               rough_noise_amp=0.6,
-               rough_noise_smooth_ms=120.0,
-               rough_alpha_slew_ms=120.0,):
+               cut_subharm_below_f0=True, subharm_vibrato_rate=6.0, subharm_vibrato_depth=0.1, subharm_f0_jitter=0, subharm_vibrato_delay=0.1,
+               F1_shift=1.0, F2_shift=1.0, F3_shift=1.0, F4_shift=1.0, formants=None,
+               roughness_on=False, rough_k_list=(2,3,4), rough_h_list=None, rough_alpha=0.6,
+               rough_hp_fc=320.0, rough_noise_amp=0.6, rough_noise_smooth_ms=120.0, rough_alpha_slew_ms=120.0,):
     window = np.hanning(n_fft)
 
     env_spec4breathiness = gaussian_filter1d(env_spec, sigma=1.75, axis=0)
@@ -806,20 +797,22 @@ def synthesize(env_spec, f0_interp, voicing_mask,
         )
         combined = harmonic_rough + aper_uv + aper_bre
 
-    if normalize:
-        peak = np.max(np.abs(combined) + 1e-6)
-        gain = 1.0 / peak
-        harmonic *= gain; aper_uv *= gain; aper_bre *= gain
-        reconstruct = combined * gain
-    else:
-        target_rms = rms(y) if len(y) else 0.1
-        current_rms = rms(combined)
-        if current_rms > 1e-12:
-            loud_gain = target_rms / current_rms
-            harmonic *= loud_gain; aper_uv *= loud_gain; aper_bre *= loud_gain
-            reconstruct = combined * loud_gain
-        else:
-            reconstruct = combined
+    norm_amt = float(np.clip(normalize, 0.0, 1.0))
+
+    target_rms = rms(y) if len(y) else 0.1
+    current_rms = rms(combined)
+    gain_rms = target_rms / current_rms if current_rms > 1e-12 else 1.0
+
+    peak = float(np.max(np.abs(combined)) + 1e-12)
+    gain_peak = 1.0 / peak
+
+    gain = gain_rms * ((gain_peak / gain_rms) ** norm_amt)
+
+    harmonic *= gain
+    aper_uv  *= gain
+    aper_bre *= gain
+    reconstruct = combined * gain
+
 
     return reconstruct, harmonic, aper_uv, aper_bre
 
