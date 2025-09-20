@@ -23,4 +23,5 @@ ___
 | `su` | `0`-`100`     | `0`   | Subharmonics strength. |
 | `L`  | `0`, `1`, `2` | `0`   | Sustain behavior: <br> `L0` = concat loop <br> `L1` = averaged mirror loop <br> `L2` = stretch |
 | `R`  | `0`, `1`      | `0`   | Reverse sample: <br> `R0` = normal <br> `R1` = reversed |
+| `P`  | `0`-`100`      | `0`  | Normalizattion |
 | vf<br>vh<br>vl | -100-100<br>0-100<br>0-100 | 0<br>50<br>15 | Vocal fry: <br>`vf` = amount (positive = start, negative = end) <br>`vh` = base pitch in Hz <br>`vl` = pitch slide amount |
