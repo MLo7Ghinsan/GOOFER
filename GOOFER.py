@@ -551,7 +551,7 @@ def extract_features(y, sr, n_fft=1024, hop_length=256,
 def synthesize(env_spec, f0_interp, voicing_mask,
                y, sr, n_fft=1024, hop_length=256,
                stretch_factor=1.0, start_sec=None, end_sec=None,
-               apply_brightness=True, normalize=True, noise_type='white',
+               apply_brightness=True, normalize=False, noise_type='white',
                uv_strength=0.5, breath_strength=0.0375, noise_transition_smoothness=100,
                pitch_shift=1.0, formant_shift=1.0,
                f0_jitter=False, f0_jitter_speed=100, f0_jitter_strength=1.5,
@@ -825,7 +825,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
 if __name__ == "__main__":
 
-    input_file = 'sx.wav'
+    input_file = 'a.wav'
 
     noise_type = 'white'  #'white' or 'brown' or 'pink'
 
@@ -863,7 +863,7 @@ if __name__ == "__main__":
     if y.ndim > 1:
         y = y.mean(axis=1)
 
-    n_fft = 782
+    n_fft = 2048
     hop_length = n_fft // 4
 
     env_spec, f0_interp, voicing_mask, formants = extract_features(y, sr, n_fft=n_fft, hop_length=hop_length)
