@@ -799,20 +799,15 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
     norm_amt = float(np.clip(normalize, 0.0, 1.0))
 
-    target_rms = rms(y) if len(y) else 0.1
-    current_rms = rms(combined)
-    gain_rms = target_rms / current_rms if current_rms > 1e-12 else 1.0
-
     peak = float(np.max(np.abs(combined)) + 1e-12)
     gain_peak = 1.0 / peak
 
-    gain = gain_rms * ((gain_peak / gain_rms) ** norm_amt)
+    gain = gain_peak ** norm_amt
 
     harmonic *= gain
     aper_uv  *= gain
     aper_bre *= gain
     reconstruct = combined * gain
-
 
     return reconstruct, harmonic, aper_uv, aper_bre
 
