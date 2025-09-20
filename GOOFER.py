@@ -5,7 +5,7 @@ import parselmouth
 
 def rms(x):
     return float(np.sqrt(np.mean(np.square(x)) + 1e-12))
-    
+
 def interp1d(x, y, kind='linear', fill_value='extrapolate'):
     if kind != 'linear':
         raise ValueError("Only 'linear' interpolation is supported.") # im lazy, duh
@@ -438,6 +438,68 @@ def warp_env_by_formants(env, orig_formants, shifted_formants, sr):
 
     return warped_env
 
+def one_pole_highpass(x, sr, fc):
+    if fc <= 0: 
+        return np.zeros_like(x)
+    rc = 1.0 / (2.0 * np.pi * fc)
+    a = rc / (rc + 1.0 / sr)
+    y = np.zeros_like(x, dtype=np.float32)
+    prev_x = 0.0
+    prev_y = 0.0
+    for i in range(len(x)):
+        xn = float(x[i])
+        yn = a * (prev_y + xn - prev_x)
+        y[i] = yn
+        prev_x = xn
+        prev_y = yn
+    return y
+
+def make_smooth_noise(length, sr, smooth_ms=120.0, seed=None):
+    if seed is not None:
+        np.random.seed(seed)
+    n = np.random.randn(length).astype(np.float32)
+    sigma = max(1.0, (smooth_ms * 0.001 * sr) / 6.0)
+    return gaussian_filter1d(n, sigma=sigma)
+
+def apply_vocal_roughness(y, f0_interp, voicing_mask, sr,
+                          k_list=(2, 3, 4),
+                          h_list=None,
+                          alpha=0.6,
+                          hp_fc=300.0,
+                          noise_amp=0.6,
+                          noise_smooth_ms=120.0,
+                          alpha_slew_ms=120.0):
+    y = np.asarray(y, dtype=np.float32)
+    f0 = np.asarray(f0_interp, dtype=np.float32)
+    vmask = np.asarray(voicing_mask, dtype=np.float32)
+
+    N = len(y)
+    if h_list is None:
+        h_list = [0.45, 0.28, 0.18][:len(k_list)]
+        if len(h_list) < len(k_list):
+            extra = len(k_list) - len(h_list)
+            h_list += [h_list[-1] * 0.6**i for i in range(1, extra+1)]
+
+    mod_sum = np.zeros(N, dtype=np.float32)
+
+    for idx, (k, hk) in enumerate(zip(k_list, h_list)):
+        nz = make_smooth_noise(N, sr, noise_smooth_ms, seed=(1337 + idx))
+        f_mod = (f0 / float(k)) * (1.0 + noise_amp * nz)
+        f_mod = np.maximum(f_mod, 0.0) * vmask
+        phase = 2.0 * np.pi * np.cumsum(f_mod) / float(sr)
+        mod_sum += hk * np.cos(phase).astype(np.float32)
+
+    y_mod = y * (1.0 + mod_sum)
+    y_sub = y_mod - y
+
+    y_sub_hp = one_pole_highpass(y_sub, sr, hp_fc)
+
+    alpha_track = alpha * vmask
+    sigma = max(1.0, (alpha_slew_ms * 0.001 * sr) / 6.0)
+    alpha_slewed = gaussian_filter1d(alpha_track, sigma=sigma).astype(np.float32)
+
+    return y + alpha_slewed * y_sub_hp
+
 def generate_noise(noise_type, length, sr):
     if noise_type == 'white':
         noise = np.random.randn(length)
@@ -498,7 +560,16 @@ def synthesize(env_spec, f0_interp, voicing_mask,
                cut_subharm_below_f0=True, subharm_vibrato_rate=6.0, subharm_vibrato_depth=0.1, subharm_f0_jitter=0,
                subharm_vibrato_delay=0.1,
                F1_shift=1.0, F2_shift=1.0, F3_shift=1.0, F4_shift=1.0,
-               formants=None):
+               formants=None,
+               # --- NEW: roughness params ---
+               roughness_on=False,
+               rough_k_list=(2,3,4),
+               rough_h_list=None,
+               rough_alpha=0.6,
+               rough_hp_fc=320.0,
+               rough_noise_amp=0.6,
+               rough_noise_smooth_ms=120.0,
+               rough_alpha_slew_ms=120.0,):
     window = np.hanning(n_fft)
 
     env_spec4breathiness = gaussian_filter1d(env_spec, sigma=1.75, axis=0)
@@ -722,6 +793,19 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
     combined = harmonic + aper_uv + aper_bre
 
+    if roughness_on:
+        harmonic_rough = apply_vocal_roughness(
+            harmonic, f0_interp, voicing_mask, sr,
+            k_list=rough_k_list,
+            h_list=rough_h_list,
+            alpha=rough_alpha,
+            hp_fc=rough_hp_fc,
+            noise_amp=rough_noise_amp,
+            noise_smooth_ms=rough_noise_smooth_ms,
+            alpha_slew_ms=rough_alpha_slew_ms
+        )
+        combined = harmonic_rough + aper_uv + aper_bre
+
     if normalize:
         peak = np.max(np.abs(combined) + 1e-6)
         gain = 1.0 / peak
@@ -741,7 +825,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
 if __name__ == "__main__":
 
-    input_file = 'this-man.mp3'
+    input_file = 'sawtooth.wav'
 
     noise_type = 'white'  #'white' or 'brown' or 'pink'
 
@@ -797,8 +881,16 @@ if __name__ == "__main__":
         subharm_vibrato_depth=subharm_vibrato_depth, subharm_f0_jitter=subharm_f0_jitter,
         subharm_vibrato_delay=subharm_vibrato_delay, volume_vibrato=volume_vibrato,
         volume_jitter_speed=volume_jitter_speed, volume_jitter_strength_harm=volume_jitter_strength_harm,
-        volume_jitter_strength_breath=volume_jitter_strength_breath)
-
+        volume_jitter_strength_breath=volume_jitter_strength_breath,
+        roughness_on=True,
+        rough_k_list=(2.5,4),
+        rough_h_list=[0.1, 0.4, 0.6, 2],
+        rough_alpha=2,
+        rough_hp_fc=280.0,
+        rough_noise_amp=0.6,
+        rough_noise_smooth_ms=120.0,
+        rough_alpha_slew_ms=120.0
+    )
 
     reconstruct_wav = f'{input_name}_reconstruct.wav'
     harmonic_wav = f'{input_name}_harmonic.wav'
