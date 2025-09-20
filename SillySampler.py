@@ -309,6 +309,9 @@ class GooferResampler:
         # subharmonics mix. HP at original F0
         self.subharm_gain = np.clip(self.flags.get('su', 0) or 0, 0, 100) / 100.0
 
+        # normalization flag
+        self.normalize = (np.clip(self.flags['P'], 0, 100) / 100.0) if 'P' in self.flags else 1.0
+
         self.render()
 
     def render(self):
@@ -710,6 +713,7 @@ class GooferResampler:
             subharm_vibrato_delay=0.01,
             cut_subharm_below_f0=True,
             subharm_f0_jitter=0,
+            normalize=self.normalize
         )
 
         # subharm stuff
@@ -724,6 +728,7 @@ class GooferResampler:
                 formants=formants_new,
                 F1_shift=self.F1_shift, F2_shift=self.F2_shift,
                 F3_shift=self.F3_shift, F4_shift=self.F4_shift,
+                normalize=self.normalize
             )
 
             f0_cut = np.maximum(f0_new, 120.0)
@@ -749,6 +754,7 @@ class GooferResampler:
                 formants=formants_new,
                 F1_shift=self.F1_shift, F2_shift=self.F2_shift,
                 F3_shift=self.F3_shift, F4_shift=self.F4_shift,
+                normalize=self.normalize
             )
 
             f0_for_hp = np.maximum(f0_new, 120.0)
@@ -789,26 +795,32 @@ class GooferResampler:
 
         # apply tension if not zero
         if self.tension != 0:
+            rms_before = gf.rms(harmonic + aper_bre)
+
             abs_ten = abs(self.tension)
-            lp_factor = 2 - abs_ten
-            hp_factor = abs_ten
             if self.tension < 0:
-                abs_ten = abs(self.tension)
                 order = int(np.round(1 + (abs_ten * 4)))
                 order = np.clip(order, 1, 6)
                 lp_factor = 2.0 - abs_ten * 0.75
-                rms_before = np.sqrt(np.mean(harmonic**2) + 1e-9)
+
                 harmonic = dynamic_butter_filter(harmonic, f0_new, sr, lp_factor, order=order, btype='lowpass')
-                rms_after = np.sqrt(np.mean(harmonic**2) + 1e-9)
-                if rms_after > 0:
-                    harmonic *= rms_before / rms_after
                 aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, abs_ten, order=4, btype='highpass')
             else:
+                hp_factor = abs_ten
                 highpassed = dynamic_butter_filter(harmonic, f0_new, sr, hp_factor * 4, order=4, btype='highpass')
-                boosted = highpassed * (1.0 + abs_ten * 20)
+                boosted = highpassed * (1.0 + abs_ten * 20.0)
                 harmonic += boosted
-                aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, lp_factor / 0.5, order=6, btype='lowpass')
-                aper_bre *= 1.0 - abs_ten
+
+                lp_factor = (2.0 - abs_ten) / 0.5
+                aper_bre = dynamic_butter_filter(aper_bre, f0_new, sr, lp_factor, order=6, btype='lowpass')
+                aper_bre *= (1.0 - abs_ten)
+
+            rms_after = gf.rms(harmonic + aper_bre)
+            if rms_after > 0:
+                gain = rms_before / rms_after
+                harmonic *= gain
+                aper_bre *= gain
+
 
         # apply volume and write output
         breath_scaled  = aper_bre * self.breathiness_mix
@@ -817,18 +829,7 @@ class GooferResampler:
 
         voiced_mix = harmonic_scaled + breath_scaled
 
-        target_peak = 0.98
-
-        if self.tension != 0:
-            max_amplitude = np.max(np.abs(voiced_mix))
-            if max_amplitude > 0:
-                voiced_mix = voiced_mix / max_amplitude * target_peak
-
         custom_mix = voiced_mix + uv_scaled
-
-        max_amplitude = np.max(np.abs(custom_mix))
-        if max_amplitude > 0:
-            custom_mix = custom_mix / max_amplitude * target_peak
 
         out = custom_mix * self.volume
 
@@ -845,14 +846,10 @@ class GooferResampler:
                 F3_shift=self.F3_shift, F4_shift=self.F4_shift,
                 uv_strength=1.0, breath_strength=1.0,
                 noise_transition_smoothness=1,
+                normalize=self.normalize
             )
 
             aperiodic_uncorr = aper_uv_u + aper_bre_u
-
-            tgt = 0.98
-            ap_peak = np.max(np.abs(aperiodic_uncorr))
-            if ap_peak > 0:
-                aperiodic_uncorr = aperiodic_uncorr / ap_peak * tgt
 
             mix = self.aperiodic_mix
             out = out * (1.0 - mix) + (aperiodic_uncorr * self.volume) * mix
@@ -899,7 +896,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v1.7'
+version = 'v1.8'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
