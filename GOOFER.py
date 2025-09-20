@@ -725,7 +725,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     S_harm = S_harm * boost_curve
 
     if apply_brightness:
-        brightness_curve = create_brightness_curve(S_harm.shape[0], sr, 3500, 5000, gain_db=3.0)
+        brightness_curve = create_brightness_curve(S_harm.shape[0], sr, 2000, 3500, gain_db=3.0)
         voiced_frames = voicing_mask[::hop_length]
         if voiced_frames.size < S_harm.shape[1]:
             voiced_frames = np.pad(voiced_frames, (0, S_harm.shape[1] - voiced_frames.size), mode='edge')
@@ -825,7 +825,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
 if __name__ == "__main__":
 
-    input_file = 'sawtooth.wav'
+    input_file = 'sx.wav'
 
     noise_type = 'white'  #'white' or 'brown' or 'pink'
 
@@ -863,7 +863,7 @@ if __name__ == "__main__":
     if y.ndim > 1:
         y = y.mean(axis=1)
 
-    n_fft = 2048
+    n_fft = 782
     hop_length = n_fft // 4
 
     env_spec, f0_interp, voicing_mask, formants = extract_features(y, sr, n_fft=n_fft, hop_length=hop_length)
@@ -882,7 +882,7 @@ if __name__ == "__main__":
         subharm_vibrato_delay=subharm_vibrato_delay, volume_vibrato=volume_vibrato,
         volume_jitter_speed=volume_jitter_speed, volume_jitter_strength_harm=volume_jitter_strength_harm,
         volume_jitter_strength_breath=volume_jitter_strength_breath,
-        roughness_on=True,
+        roughness_on=False,
         rough_k_list=(2.5,4),
         rough_h_list=[0.1, 0.4, 0.6, 2],
         rough_alpha=2,
@@ -897,9 +897,9 @@ if __name__ == "__main__":
     breathiness = f'{input_name}_breathiness.wav'
     unvoiced = f'{input_name}_unvoiced.wav'
     sf.write(reconstruct_wav, reconstruct, sr)
-    #sf.write(harmonic_wav, harmonic, sr)
-    #sf.write(breathiness, aper_bre, sr)
-    #sf.write(unvoiced, aper_uv, sr)
+    sf.write(harmonic_wav, harmonic, sr)
+    sf.write(breathiness, aper_bre, sr)
+    sf.write(unvoiced, aper_uv, sr)
     print(f'Reconstructed audio saved: {reconstruct_wav}')
 
     save_feature = False
