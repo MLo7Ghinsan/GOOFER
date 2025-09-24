@@ -203,20 +203,55 @@ def fix_f0_gaps(f0_array, max_gap=4):
             i += 1
     return f0_fixed
 
-def lf_model_pulse(T, Ra=0.01, Rg=1.47, Rk=0.34, sr=44100):
-    t = np.linspace(0, T, int(sr * T), endpoint=False)
-    Ee = 1.0
-    Ta = Ra * T
-    Tp = T / (2 * Rg)
-    Te = Tp + Rk * (T - Tp)
+def lf_model_pulse(T, Ra=0.01, Rg=1.47, Rk=0.34, sr=44100, smoothing=False):
+    # Added ARX glottal pulse
+    # s(t) = G(t) * i(t) + e(g) - Glottal Response * Impulse + Exogenous Residual
+    T0_samples = int(round(sr * T)) # amount of samples for one period
+    if T0_samples <= 3:  # just defining a minimum amount of pulses
+        T0_samples = 3
+    t = np.linspace(0, T, T0_samples, endpoint=False)
+    
+    # LF model parameters (normalized to period T)
+    Ta = Ra * T  # open phase
+    Te = T  # entire period
+    
+    # Calculate Tp and Tc based on Rg and Rk
+    Tp = Ta  # peak time (end of opening phase)
+    Tc = Tp + Rk * (Te - Tp)  # return phase
 
-    Ug = np.zeros_like(t)
-    for i, ti in enumerate(t):
-        if ti < Te:
-            Ug[i] = Ee * np.exp(-np.pi * (ti / Tp)**2)
-        elif ti < T:
-            Ug[i] = -Ee * ((1 - (ti - Te) / (T - Te))**2)
-    return Ug / (np.max(np.abs(Ug)) + 1e-6)
+    pulse = np.zeros(T0_samples) # pulse init
+    for i in range(T0_samples): # pulse shape
+        ti = t[i]
+        if ti < Tp:
+            # open phase rise
+            pulse[i] = np.sin(np.pi * ti / (2 * Tp)) ** 2
+        elif ti < Tc:
+            # return phase decay
+            tau = (ti - Tp) / (Tc - Tp)
+            pulse[i] = np.exp(-Rg * tau) * np.cos(np.pi * tau / 2)
+        else:
+            pulse[i] = 0.0 # closed phase zeroing
+
+    if smoothing:
+        pulse = _smooth_arx_pulse(pulse, T0_samples) # smoothing
+    max_val = np.max(np.abs(pulse))
+    if max_val > 0:
+        pulse = pulse / max_val # normalised
+    return pulse.astype(np.float32)
+
+def _smooth_arx_pulse(pulse, T0_samples):
+    smoothed = pulse.copy() # copy pulse
+    
+    if len(pulse) > 5:
+        sigma = max(1, T0_samples // 20)  # adaptive smoothing
+        if sigma > 0:
+            smoothed = gaussian_filter1d(pulse, sigma=sigma) # gaussian smoothing
+    
+    closed_phase_start = int(T0_samples * 0.7)
+    if closed_phase_start < len(smoothed):
+        smoothed[closed_phase_start:] = 0.0
+    
+    return smoothed
 
 def create_brightness_curve(n_bins, sr, start_hz=4000, end_hz=4500, gain_db=6.0):
     freqs = np.linspace(0, sr / 2, n_bins)
@@ -549,7 +584,7 @@ def extract_features(y, sr, n_fft=1024, hop_length=256,
     return env_spec, f0_interp, voicing_mask, formants
 
 def synthesize(env_spec, f0_interp, voicing_mask,
-               y, sr, n_fft=1024, hop_length=256,
+               y, sr, n_fft=1024, hop_length=256, glottal_smoothing=False,
                stretch_factor=1.0, start_sec=None, end_sec=None,
                apply_brightness=True, normalize=1.0, noise_type='white',
                uv_strength=0.5, breath_strength=0.0375, noise_transition_smoothness=100,
@@ -560,7 +595,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
                cut_subharm_below_f0=True, subharm_vibrato_rate=6.0, subharm_vibrato_depth=0.1, subharm_f0_jitter=0, subharm_vibrato_delay=0.1,
                F1_shift=1.0, F2_shift=1.0, F3_shift=1.0, F4_shift=1.0, formants=None,
                roughness_on=False, rough_k_list=(2,3,4), rough_h_list=None, rough_alpha=0.6,
-               rough_hp_fc=320.0, rough_noise_amp=0.6, rough_noise_smooth_ms=120.0, rough_alpha_slew_ms=120.0,):
+               rough_hp_fc=320.0, rough_noise_amp=0.6, rough_noise_smooth_ms=120.0, rough_alpha_slew_ms=120.0):
     window = np.hanning(n_fft)
 
     env_spec4breathiness = gaussian_filter1d(env_spec, sigma=1.75, axis=0)
@@ -631,7 +666,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
         f0_jitter = apply_f0_jitter(f0_interp, sr, speed=f0_jitter_speed, strength=f0_jitter_strength)
         f0_interp *= 1.0 + ((f0_jitter - 1.0) * voicing_mask)
 
-    # LF glottal pulse train generator: generate LF pulse train from F0
+    # ARX-LF glottal pulse train generator
     pulse = np.zeros_like(f0_interp, dtype=np.float32)
     phase = 0.0
     last_f0 = 160.0
@@ -644,16 +679,15 @@ def synthesize(env_spec, f0_interp, voicing_mask,
         phase += f0 / sr
 
         if phase >= 1.0:
-            T_samples = int(round(sr / max(last_f0, 1e-6)))
-            T_samples = max(3, T_samples)
-
-            if T_samples not in pulse_cache:
-                T_sec = T_samples / sr
-                pulse_cache[T_samples] = lf_model_pulse(
-                    T_sec, Ra=0.02, Rg=1.7, Rk=1.0, sr=sr
+            T_sec = 1.0 / max(last_f0, 1e-6)
+            
+            # ARX model implemented
+            if T_sec not in pulse_cache:
+                pulse_cache[T_sec] = lf_model_pulse(
+                    T_sec, Ra=0.02, Rg=1.7, Rk=0.8, sr=sr
                 ).astype(np.float32)
 
-            lf_pulse = pulse_cache[T_samples]
+            lf_pulse = pulse_cache[T_sec]
             start = i
             end = min(len(pulse), start + len(lf_pulse))
             if end > start:
@@ -813,7 +847,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
 if __name__ == "__main__":
 
-    input_file = 'a.wav'
+    input_file = '_input.wav'
 
     noise_type = 'white'  #'white' or 'brown' or 'pink'
 
