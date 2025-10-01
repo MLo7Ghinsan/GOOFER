@@ -9,7 +9,7 @@ import soundfile as sf
 
 import GOOFER as gf
 
-n_fft = 2048
+n_fft = 1024
 hop_length = n_fft // 4
 
 logging.basicConfig(format='%(message)s', level=logging.INFO)
