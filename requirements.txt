@@ -1,3 +1,5 @@
 numpy
 soundfile
 praat-parselmouth
+scipy
+numba
