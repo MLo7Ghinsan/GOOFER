@@ -5,6 +5,7 @@ from socketserver import ThreadingMixIn
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+from numba import jit
 import soundfile as sf
 
 import GOOFER as gf
@@ -64,6 +65,34 @@ def note_to_midi(n):
 def midi_to_hz(m):
     return 440.0 * 2**((m-69)/12)
 
+@jit(nopython=True)
+def lowpass_filter_numba(x:np.ndarray,n:int, alpha:np.ndarray, order:int):
+
+    y = x.copy()
+    for _ in range(order):
+        yp = np.float32(0.0)
+        for i in range(n):
+            a = alpha[i]
+            xp = y[i]
+            yp = yp + a * (xp - yp)
+            y[i] = yp
+    return y
+
+@jit(nopython=True)
+def highpass_filter_numba(x:np.ndarray,n:int, alpha:np.ndarray, order:int):
+
+    y = x.copy()
+    for _ in range(order):
+        yp = np.float32(0.0)
+        prev_x = y[0] if n > 0 else np.float32(0.0)
+        for i in range(n):
+            a = alpha[i]
+            xp = y[i]
+            yp = a * (yp + xp - prev_x)
+            y[i] = yp
+            prev_x = xp
+    return y
+
 def dynamic_butter_filter(signal, f0, sr, cutoff_factor, order=4, btype='lowpass'):
     x = np.asarray(signal, dtype=np.float32)
     n = len(x)
@@ -102,27 +131,12 @@ def dynamic_butter_filter(signal, f0, sr, cutoff_factor, order=4, btype='lowpass
         alpha = sr / (two_pi * fc + sr)
     alpha = alpha.astype(np.float32)
 
-    y = x.copy()
+    order = max(1, int(order))
+    
     if btype == 'lowpass':
-        for _ in range(max(1, int(order))):
-            yp = np.float32(0.0)
-            for i in range(n):
-                a = alpha[i]
-                xp = y[i]
-                yp = yp + a * (xp - yp)
-                y[i] = yp
+        return lowpass_filter_numba(x,n, alpha, order)
     else:
-        for _ in range(max(1, int(order))):
-            yp = np.float32(0.0)
-            prev_x = y[0] if n else np.float32(0.0)
-            for i in range(n):
-                a = alpha[i]
-                xp = y[i]
-                yp = a * (yp + xp - prev_x)
-                y[i] = yp
-                prev_x = xp
-
-    return y
+        return highpass_filter_numba(x,n, alpha, order)
 
 def stretch_prefix_1d(x, pre_len, factor):
     n = len(x)

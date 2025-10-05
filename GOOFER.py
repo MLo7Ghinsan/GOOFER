@@ -2,88 +2,51 @@ import numpy as np
 import soundfile as sf
 import os
 import parselmouth
-
+from scipy.interpolate import interp1d as scipy_interp1d
+from scipy.ndimage import gaussian_filter1d as scipy_gaussian_filter1d
+from scipy.signal import stft as scipy_stft, istft as scipy_istft
+from scipy.signal import lfilter
 def rms(x):
     return float(np.sqrt(np.mean(np.square(x)) + 1e-12))
 
 def interp1d(x, y, kind='linear', fill_value='extrapolate'):
     if kind != 'linear':
-        raise ValueError("Only 'linear' interpolation is supported.") # im lazy, duh
+        raise ValueError("Only 'linear' interpolation is supported.")
 
-    x = np.asarray(x)
-    y = np.asarray(y)
-    
-    def interpolator(x_new):
-        x_new = np.asarray(x_new)
-        y_new = np.zeros_like(x_new, dtype=y.dtype)
-        
-        # find indices for interpolation
-        indices = np.searchsorted(x, x_new, side='left')
-        indices = np.clip(indices, 1, len(x) - 1)
-        # identify points within bounds
-        within_bounds = (x_new >= x[0]) & (x_new <= x[-1])
+    x = np.asarray(x,dtype=float)
+    y = np.asarray(y,dtype=float)
 
-        # linear interpolation for points within bounds
-        if np.any(within_bounds):
-            x0 = x[indices[within_bounds] - 1]
-            x1 = x[indices[within_bounds]]
-            y0 = y[indices[within_bounds] - 1]
-            y1 = y[indices[within_bounds]]
-            # we hate division by zero
-            denom = x1 - x0
-            denom = np.where(denom == 0, 1e-10, denom)
-            # linear interpolation
-            slope = (y1 - y0) / denom
-            y_new[within_bounds] = y0 + slope * (x_new[within_bounds] - x0)
-        
-        # handle points outside bounds based on fill_value
-        if fill_value != 'extrapolate':
-            # if fill_value is a number likr lets say 0), set out-of-bounds values to it
-            try:
-                fill_val = float(fill_value)
-                y_new[~within_bounds] = fill_val
-            except (TypeError, ValueError):
-                raise ValueError("fill_value must be 'extrapolate' or a number")
-        else:
-            # extrapolate for points outside bounds
-            # left side: use slope from first two points
-            left_mask = x_new < x[0]
-            if np.any(left_mask):
-                slope_left = (y[1] - y[0]) / (x[1] - x[0] + 1e-10)
-                y_new[left_mask] = y[0] + slope_left * (x_new[left_mask] - x[0])
-            # right side: use slope from last two points
-            right_mask = x_new > x[-1]
-            if np.any(right_mask):
-                slope_right = (y[-1] - y[-2]) / (x[-1] - x[-2] + 1e-10)
-                y_new[right_mask] = y[-1] + slope_right * (x_new[right_mask] - x[-1])
-            # left side, right side- ha wo tsu k ida shi te papa pa
-        return y_new
-    return interpolator
+
+    if not np.all(np.diff(x) > 0):
+        raise ValueError("x must be strictly increasing.")
+
+    if fill_value == 'extrapolate':
+        f = scipy_interp1d(x, y, kind='linear', fill_value='extrapolate', bounds_error=False)
+    else:
+        try:
+            fill_val = float(fill_value)
+        except (TypeError, ValueError):
+            raise ValueError("fill_value must be 'extrapolate' or a number")
+        f = scipy_interp1d(x, y, kind='linear', fill_value=fill_val, bounds_error=False)
+
+    return f
 
 def gaussian_filter1d(input_array, sigma, axis=-1, truncate=4.0):
-    arr = np.asarray(input_array)
+    arr = np.asarray(input_array, dtype=float)
     if arr.size == 0 or arr.shape[axis] == 0:
         return arr.copy()
-    # clamp to something reasonable
-    sigma = float(sigma)
     if sigma <= 0.0:
         return arr.copy()
-    # calculate kernel
-    radius = int(truncate * sigma + 0.5)
-    if radius <= 0:
-        return arr.copy()
-    t = np.arange(-radius, radius + 1)
-    kernel = np.exp(-0.5 * (t / sigma) ** 2)
-    kernel /= kernel.sum()
-
-    arr_moved = np.moveaxis(arr, axis, -1)
-
-    padded = np.pad(arr_moved,
-                    [(0, 0)] * (arr_moved.ndim - 1) + [(radius, radius)],
-                    mode='reflect')
-
-    out_moved = np.apply_along_axis(lambda m: np.convolve(m, kernel, mode='valid'), -1, padded)
-    return np.moveaxis(out_moved, -1, axis) # gotta move axis back where it came from
+    
+    # mode='mirror' 对应 np.pad(..., mode='reflect')
+    return scipy_gaussian_filter1d(
+        arr,
+        sigma=sigma,
+        axis=axis,
+        truncate=truncate,
+        mode='mirror',
+        order=0
+    )
 
 def gaussian_filter(input_array, sigma):
     arr = np.asarray(input_array)
@@ -149,43 +112,68 @@ def f0_estimate(snd, fr_duration, f0_min=75, f0_max=950, voice_thresh=0.63, sil_
 def stft(x, n_fft=2048, hop_length=512, window=None):
     if window is None:
         window = np.hanning(n_fft) ** 0.5
+        
+    window_sum = np.sum(window)
+    
     x = np.asarray(x, dtype=np.float32)
+    
     pad = n_fft // 2
-    x_padded = np.pad(x, pad, mode='reflect') if len(x) >= 2 else np.pad(x, pad, mode='edge')
+    
+    if len(x) >= 2:
+        x_padded = np.pad(x, pad, mode='reflect')
+    else:
+        x_padded = np.pad(x, pad, mode='edge')
+    
     if len(x_padded) < n_fft:
         x_padded = np.pad(x_padded, (0, n_fft - len(x_padded)), mode='edge')
+    
     num_frames = max(1, 1 + (len(x_padded) - n_fft) // hop_length)
-    frames = np.lib.stride_tricks.as_strided(
+    
+    f, t, Zxx = scipy_stft(
         x_padded,
-        shape=(n_fft, num_frames),
-        strides=(x_padded.strides[0], hop_length * x_padded.strides[0])
-    ).copy()
-    frames *= window[:, None]
-    return np.fft.rfft(frames, axis=0)
+        window=window,
+        nperseg=n_fft,
+        noverlap=n_fft - hop_length,
+        nfft=n_fft,
+        boundary=None,
+        padded=False
+    )
+
+    if Zxx.shape[1] > num_frames:
+        Zxx = Zxx[:, :num_frames]
+    elif Zxx.shape[1] < num_frames:
+        padding = ((0, 0), (0, num_frames - Zxx.shape[1]))
+        Zxx = np.pad(Zxx, padding, mode='constant')
+    
+    return Zxx*window_sum
 
 def istft(S, hop_length=512, window=None, length=None):
     n_fft = (S.shape[0] - 1) * 2
     if window is None:
         window = np.hanning(n_fft) ** 0.5
-    frames = np.fft.irfft(S, axis=0, n=n_fft)
+        
+    window_sum = np.sum(window)
+    
+    t, y_padded = scipy_istft(
+        S/window_sum,
+        window=window,
+        nperseg=n_fft,
+        noverlap=n_fft - hop_length,
+        nfft=n_fft,
+        input_onesided=True,
+        boundary=False
+    )
+    
     pad = n_fft // 2
-    expected_len = n_fft + hop_length * (frames.shape[1] - 1)
-    y = np.zeros(expected_len, dtype=np.float32)
-    win_sum = np.zeros(expected_len, dtype=np.float32)
-    for i in range(frames.shape[1]):
-        start = i * hop_length
-        sl = slice(start, start + n_fft)
-        y[sl] += frames[:, i] * window
-        win_sum[sl] += window**2
-    nonzero = win_sum > 1e-9
-    y[nonzero] /= win_sum[nonzero]
-    y = y[pad: expected_len - pad]
+    y = y_padded[pad:-pad] if len(y_padded) > 2 * pad else y_padded
+
     if length is not None:
         if len(y) < length:
-            y = np.pad(y, (0, length - len(y)))
+            y = np.pad(y, (0, length - len(y)), mode='constant')
         else:
             y = y[:length]
-    return y
+    
+    return y.astype(np.float32)
 
 def fix_f0_gaps(f0_array, max_gap=4):
     f0_fixed = f0_array.copy()
@@ -207,36 +195,39 @@ def lf_model_pulse(T, Ra=0.01, Rg=1.47, Rk=0.34, sr=44100, smoothing=False):
     # Added ARX glottal pulse
     # s(t) = G(t) * i(t) + e(g) - Glottal Response * Impulse + Exogenous Residual
     T0_samples = int(round(sr * T)) # amount of samples for one period
-    if T0_samples <= 3:  # just defining a minimum amount of pulses
+    if T0_samples <= 3:  # just defining a minimum amount of pulses 
         T0_samples = 3
-    t = np.linspace(0, T, T0_samples, endpoint=False)
-    
-    # LF model parameters (normalized to period T)
-    Ta = Ra * T  # open phase
-    Te = T  # entire period
-    
-    # Calculate Tp and Tc based on Rg and Rk
-    Tp = Ta  # peak time (end of opening phase)
-    Tc = Tp + Rk * (Te - Tp)  # return phase
 
-    pulse = np.zeros(T0_samples) # pulse init
-    for i in range(T0_samples): # pulse shape
-        ti = t[i]
-        if ti < Tp:
-            # open phase rise
-            pulse[i] = np.sin(np.pi * ti / (2 * Tp)) ** 2
-        elif ti < Tc:
-            # return phase decay
-            tau = (ti - Tp) / (Tc - Tp)
-            pulse[i] = np.exp(-Rg * tau) * np.cos(np.pi * tau / 2)
-        else:
-            pulse[i] = 0.0 # closed phase zeroing
+    t = np.linspace(0, T, T0_samples, endpoint=False)
+
+    # Derived parameters
+    Ta = Ra * T
+    Tp = Ta
+    Tc = Tp + Rk * (T - Tp)  # Te = T
+
+    pulse = np.zeros_like(t)
+
+    # Phase 1: Open phase (0 <= t < Tp)
+    mask1 = t < Tp
+    if np.any(mask1):
+        pulse[mask1] = np.sin(np.pi * t[mask1] / (2 * Tp)) ** 2
+
+    # Phase 2: Return phase (Tp <= t < Tc)
+    mask2 = (t >= Tp) & (t < Tc)
+    if np.any(mask2):
+        tau = (t[mask2] - Tp) / (Tc - Tp)
+        pulse[mask2] = np.exp(-Rg * tau) * np.cos(np.pi * tau / 2)
+
+    # Phase 3: Closed phase (t >= Tc) — already zero, no action needed
 
     if smoothing:
-        pulse = _smooth_arx_pulse(pulse, T0_samples) # smoothing
+        pulse = _smooth_arx_pulse(pulse, T0_samples)
+
+    # Normalize
     max_val = np.max(np.abs(pulse))
     if max_val > 0:
-        pulse = pulse / max_val # normalised
+        pulse /= max_val
+
     return pulse.astype(np.float32)
 
 def _smooth_arx_pulse(pulse, T0_samples):
@@ -291,10 +282,9 @@ def shift_formants(env, shift_ratio, sr):
     freqs = np.linspace(0, sr / 2, n_bins)
     warped_freqs = np.clip(freqs / shift_ratio, 0, sr / 2)
 
-    interp_env = np.zeros_like(env)
-    for t in range(n_frames):
-        interp_func = interp1d(freqs, env[:, t], kind='linear', fill_value='extrapolate')
-        interp_env[:, t] = interp_func(warped_freqs)
+    f_interp = scipy_interp1d(freqs, env, kind='linear', axis=0, fill_value='extrapolate')
+    interp_env = f_interp(warped_freqs)
+
     return interp_env
 
 def match_env_frames(env, target_frames):
@@ -474,19 +464,16 @@ def warp_env_by_formants(env, orig_formants, shifted_formants, sr):
     return warped_env
 
 def one_pole_highpass(x, sr, fc):
-    if fc <= 0: 
-        return np.zeros_like(x)
+    if fc <= 0:
+        return np.zeros_like(x, dtype=np.float32)
+    
     rc = 1.0 / (2.0 * np.pi * fc)
     a = rc / (rc + 1.0 / sr)
-    y = np.zeros_like(x, dtype=np.float32)
-    prev_x = 0.0
-    prev_y = 0.0
-    for i in range(len(x)):
-        xn = float(x[i])
-        yn = a * (prev_y + xn - prev_x)
-        y[i] = yn
-        prev_x = xn
-        prev_y = yn
+    
+    b = np.array([a, -a], dtype=np.float32)
+    a_coeff = np.array([1.0, -a], dtype=np.float32)
+    
+    y = lfilter(b, a_coeff, x.astype(np.float32))
     return y
 
 def make_smooth_noise(length, sr, smooth_ms=120.0, seed=None):
