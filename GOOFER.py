@@ -32,7 +32,7 @@ def interp1d(x, y, kind='linear', fill_value='extrapolate'):
     return f
 
 def gaussian_filter1d(input_array, sigma, axis=-1, truncate=4.0):
-    arr = np.asarray(input_array, dtype=float)
+    arr = np.asarray(input_array, dtype=np.complex64 if np.iscomplexobj(input_array) else np.float32)
     if arr.size == 0 or arr.shape[axis] == 0:
         return arr.copy()
     if sigma <= 0.0:
@@ -115,7 +115,7 @@ def stft(x, n_fft=2048, hop_length=512, window=None):
         
     window_sum = np.sum(window)
     
-    x = np.asarray(x, dtype=np.float32)
+    x = np.asarray(x, dtype=np.complex64 if np.iscomplexobj(x) else np.float32)
     
     pad = n_fft // 2
     
@@ -546,6 +546,7 @@ def extract_features(y, sr, n_fft=1024, hop_length=256,
     voicing_threshold = f0_min
     S_orig = stft(y, n_fft=n_fft, hop_length=hop_length, window=window)
     mag = np.abs(S_orig) + 1e-8
+    print("mag",mag.dtype)
     env_spec = gaussian_filter1d(mag, sigma=2.0, axis=0)
     #blurred = gaussian_filter1d(env_spec, sigma=1.0, axis=1)
     #alpha = 1.0
@@ -584,6 +585,8 @@ def synthesize(env_spec, f0_interp, voicing_mask,
                roughness_on=False, rough_k_list=(2,3,4), rough_h_list=None, rough_alpha=0.6,
                rough_hp_fc=320.0, rough_noise_amp=0.6, rough_noise_smooth_ms=120.0, rough_alpha_slew_ms=120.0):
     window = np.hanning(n_fft)
+    
+    print("env_spec",env_spec.dtype)
 
     env_spec4breathiness = gaussian_filter1d(env_spec, sigma=1.75, axis=0)
 
@@ -654,6 +657,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
         f0_interp *= 1.0 + ((f0_jitter - 1.0) * voicing_mask)
 
     # ARX-LF glottal pulse train generator
+    print("LF")
     pulse = np.zeros_like(f0_interp, dtype=np.float32)
     phase = 0.0
     last_f0 = 160.0
@@ -704,6 +708,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
             subharm_semitones=subharm_semitones
         )
         pulse += sub_pulse
+    print("stft")
 
     S_harm = stft(pulse, n_fft=n_fft, hop_length=hop_length, window=window)
 
@@ -716,6 +721,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     cutoff = f0_env_frames.reshape(1, -1)
 
     # Smooth sigmoid mask per frame
+    print("Smooth sigmoid")
     sharpness = 5
     highpass_mask = 1.0 / (1.0 + np.exp(-(freqs - cutoff) / sharpness))
 
@@ -736,6 +742,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     S_harm = (S_harm / mag_harm) * env_spec_4harm
     S_harm = S_harm * boost_curve
 
+    print("breathiness")
     if apply_brightness:
         brightness_curve = create_brightness_curve(S_harm.shape[0], sr, 2000, 3500, gain_db=3.0)
         voiced_frames = voicing_mask[::hop_length]
@@ -752,12 +759,15 @@ def synthesize(env_spec, f0_interp, voicing_mask,
             harm_voiced[:, cols] = gaussian_filter(harm_voiced[:, cols], sigma=(0.5, 0))
         S_harm[:, :voiced_frames.size] = harm_voiced
 
+    print("istft")
     harmonic = istft(S_harm, hop_length=hop_length, window=window, length=len(y))
 
+    print("gnoise")
     raw_noise = generate_noise(noise_type, len(y), sr)
     S_noise = stft(raw_noise, n_fft=n_fft, hop_length=hop_length, window=window)
 
     # Apply to noise
+    print("noise")
     S_noise_filtered = S_noise * highpass_mask
 
     env_noise = match_env_frames(env_spec4breathiness, S_noise.shape[1])
@@ -789,6 +799,8 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     aper_uv = istft(S_uv, hop_length=hop_length, window=window, length=len(y))
 
     # Gain Control (Breathiness vs Unvoiced)
+    print("gain control")
+    print("voicing_mask",voicing_mask.dtype)
     voicing_mask_smooth = gaussian_filter1d(voicing_mask, sigma=noise_transition_smoothness)
     breathy_aper = aper_breath * voicing_mask_smooth * breath_strength
     noisy_aper = aper_uv * (1.0 - voicing_mask_smooth) * uv_strength
@@ -874,6 +886,10 @@ if __name__ == "__main__":
 
     n_fft = 2048
     hop_length = n_fft // 4
+    
+    import time
+    
+    start_time = time.time()
 
     env_spec, f0_interp, voicing_mask, formants = extract_features(y, sr, n_fft=n_fft, hop_length=hop_length)
 
@@ -900,6 +916,8 @@ if __name__ == "__main__":
         rough_noise_smooth_ms=120.0,
         rough_alpha_slew_ms=120.0
     )
+    end_time = time.time()
+    print(f"Time taken: {end_time - start_time} seconds")
 
     reconstruct_wav = f'{input_name}_reconstruct.wav'
     harmonic_wav = f'{input_name}_harmonic.wav'
