@@ -3,6 +3,143 @@ import soundfile as sf
 import os
 import parselmouth
 
+DSTORAGE = np.float16 # for files / big arrays
+DCOMPUTE = np.float32 # for math
+_W_CACHE = {}
+_CACHE = {}
+
+def get_cached_window(sr, n_fft):
+    key = ("win", sr, n_fft)
+    w = _CACHE.get(key)
+    if w is None:
+        w = np.hanning(n_fft).astype(np.float32) ** 0.5
+        _CACHE[key] = w
+    return w
+
+def get_cached_freqs(sr, n_fft):
+    key = ("freqs", sr, n_fft)
+    f = _CACHE.get(key)
+    if f is None:
+        f = np.fft.rfftfreq(n_fft, 1.0 / sr).astype(np.float32).reshape(-1, 1)
+        _CACHE[key] = f
+    return f
+
+def get_cached_boost(sr, n_fft):
+    key = ("boost", sr, n_fft)
+    b = _CACHE.get(key)
+    if b is None:
+        n_bins = n_fft // 2 + 1
+        b = np.linspace(1, 100, n_bins, dtype=np.float32).reshape(-1, 1)
+        _CACHE[key] = b
+    return b
+
+def get_cached_brightness(sr, n_fft):
+    key = ("bright", sr, n_fft)
+    curves = _CACHE.get(key)
+    if curves is None:
+        n_bins = n_fft // 2 + 1
+        harm = create_brightness_curve(n_bins, sr, 2000, 3500, gain_db=3.0).astype(np.float32)
+        brea = create_brightness_curve(n_bins, sr, 3500, 5000, gain_db=20.0).astype(np.float32)
+        curves = (harm, brea)
+        _CACHE[key] = curves
+    return curves # (harm_curve, breath_curve)
+
+def to_compute(x): return np.asarray(x, dtype=DCOMPUTE)
+
+def hz_to_mel(hz): return 2595.0 * np.log10(1.0 + hz / 700.0)
+def mel_to_hz(m):  return 700.0 * (10**(m / 2595.0) - 1.0)
+
+def make_mel_knots(sr, n_fft, K):
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+    mel_min, mel_max = hz_to_mel(0.0), hz_to_mel(sr / 2.0)
+    mel_knots = np.linspace(mel_min, mel_max, K, dtype=DCOMPUTE)
+    hz_knots = mel_to_hz(mel_knots).astype(DCOMPUTE)
+    return freqs.astype(DCOMPUTE), hz_knots
+
+def precompute_interp_matrix(freqs_full, hz_knots):
+    N = len(freqs_full); K = len(hz_knots)
+    idx = np.searchsorted(hz_knots, freqs_full, side='right') - 1
+    idx = np.clip(idx, 0, K - 2)
+    x0 = hz_knots[idx]; x1 = hz_knots[idx + 1]
+    w1 = (freqs_full - x0) / np.maximum(x1 - x0, 1e-12)
+    w0 = 1.0 - w1
+    W = np.zeros((N, K), dtype=DCOMPUTE)
+    rows = np.arange(N)
+    W[rows, idx]     = w0
+    W[rows, idx + 1] = w1
+    return W
+
+def compress_env_to_knots(env_spec, sr, n_fft, eps=1e-2, K_start=32, K_step=16, K_max=192, smooth_sigma_bins=0.5):
+    env = to_compute(env_spec)
+    if smooth_sigma_bins > 0:
+        env = gaussian_filter1d(env, sigma=smooth_sigma_bins, axis=0)
+    log_env = np.log(np.maximum(env, 1e-8)).astype(DCOMPUTE)
+
+    n_bins, T = log_env.shape
+    freqs = np.fft.rfftfreq(n_fft, 1.0/sr).astype(DCOMPUTE)
+
+    check_idx = np.linspace(0, T-1, min(256, T), dtype=int)
+
+    best = None
+    K = K_start
+    while K <= K_max:
+        _, hz_knots = make_mel_knots(sr, n_fft, K)
+        bin_idx = np.clip(np.round(hz_knots / (sr / n_fft)).astype(int), 0, n_bins-1)
+        knot_vals_log = log_env[bin_idx, :]
+
+        W = precompute_interp_matrix(freqs, hz_knots)
+        recon_log = W @ knot_vals_log[:, check_idx]
+        rel_err = np.max(
+            np.abs(np.exp(recon_log) - env[:, check_idx]) / (env[:, check_idx] + 1e-8)
+        )
+
+        if rel_err < eps:
+            best = {
+                "mode": "knots",
+                "knot_vals_log": knot_vals_log.astype(DSTORAGE),
+                "hz_knots": hz_knots.astype(DCOMPUTE),
+                "n_bins": int(n_bins),
+                "n_fft": int(n_fft),
+                "sr": int(sr),
+            }
+            break
+        K += K_step
+
+    if best is None:
+        # fall back to max K
+        _, hz_knots = make_mel_knots(sr, n_fft, K_max)
+        bin_idx = np.clip(np.round(hz_knots / (sr / n_fft)).astype(int), 0, n_bins-1)
+        knot_vals_log = log_env[bin_idx, :]
+        best = {
+            "mode": "knots",
+            "knot_vals_log": knot_vals_log.astype(DSTORAGE),
+            "hz_knots": hz_knots.astype(DCOMPUTE),
+            "n_bins": int(n_bins),
+            "n_fft": int(n_fft),
+            "sr": int(sr),
+        }
+    return best
+
+def decode_env_from_knots(env_pack):
+    assert env_pack["mode"] == "knots"
+    knot_vals_log = np.asarray(env_pack["knot_vals_log"]).astype(DCOMPUTE)
+    hz_knots = np.asarray(env_pack["hz_knots"]).astype(DCOMPUTE)
+    n_fft = int(env_pack["n_fft"])
+    sr = int(env_pack["sr"])
+    n_bins = int(env_pack["n_bins"])
+
+    freqs = np.fft.rfftfreq(n_fft, 1.0/sr).astype(DCOMPUTE)
+    key = (sr, n_fft, len(hz_knots))
+    if key not in _W_CACHE:
+        _W_CACHE[key] = precompute_interp_matrix(freqs, hz_knots).astype(DCOMPUTE)
+    W = _W_CACHE[key]
+
+    log_env = W @ knot_vals_log
+    env = np.exp(log_env).astype(DCOMPUTE)
+    if env.shape[0] != n_bins:
+        env = env[:n_bins, :]
+    return env
+
 def rms(x):
     return float(np.sqrt(np.mean(np.square(x)) + 1e-12))
 
@@ -109,28 +246,59 @@ def gaussian_filter(input_array, sigma):
         out = gaussian_filter1d(out, s1, axis=1)
     return out
 
+def save_features(path, features, f0_interp, voicing_mask, formants, sr, y_len):
+    with open(path, 'wb') as f:
+        if isinstance(features, dict) and features.get("mode") == "knots":
+            np.savez_compressed(
+                f,
+                mode=np.array(['knots']),
+                knot_vals_log=features["knot_vals_log"],      # fp16
+                hz_knots=features["hz_knots"],                # fp32
+                n_bins=np.array([features["n_bins"]], dtype=np.int32),
+                n_fft=np.array([features["n_fft"]], dtype=np.int32),
+                env_sr=np.array([features["sr"]], dtype=np.int32),
+
+                f0_interp=f0_interp.astype(DSTORAGE),
+                voicing_mask=voicing_mask.astype(DSTORAGE),
+                formants=formants,
+                sr=np.array([sr], dtype=np.int32),
+                y_len=np.array([y_len], dtype=np.int64),
+            )
+        else:
+            env_spec = np.asarray(features, dtype=DSTORAGE)
+            np.savez_compressed(
+                f,
+                mode=np.array(['full']),
+                env_spec=env_spec,
+                f0_interp=f0_interp.astype(DSTORAGE),
+                voicing_mask=voicing_mask.astype(DSTORAGE),
+                formants=formants,
+                sr=np.array([sr], dtype=np.int32),
+                y_len=np.array([y_len], dtype=np.int64),
+                n_fft=np.array([env_spec.shape[0]*2-2], dtype=np.int32)
+            )
+
 def load_features(path):
     data = np.load(path, allow_pickle=True)
-    return (
-        data["env_spec"],
-        data["f0_interp"],
-        data["voicing_mask"],
-        data["formants"].item(),
-        int(data["sr"][0]),
-        int(data["y_len"][0])
-    )
-
-def save_features(path, env_spec, f0_interp, voicing_mask, formants, sr, y_len):
-    with open(path, 'wb') as goofy_ahh:
-        np.savez_compressed(
-            goofy_ahh,
-            env_spec=env_spec,
-            f0_interp=f0_interp,
-            voicing_mask=voicing_mask,
-            formants=formants,
-            sr=np.array([sr]),
-            y_len=np.array([y_len]),
-        )
+    mode = str(data["mode"][0])
+    if mode == "knots":
+        env_pack = {
+            "mode": "knots",
+            "knot_vals_log": data["knot_vals_log"],
+            "hz_knots": data["hz_knots"],
+            "n_bins": int(data["n_bins"][0]),
+            "n_fft": int(data["n_fft"][0]),
+            "sr": int(data["env_sr"][0]),
+        }
+        env_spec = env_pack # decoded later
+    else:
+        env_spec = to_compute(data["env_spec"])
+    f0_interp = to_compute(data["f0_interp"])
+    voicing_mask = to_compute(data["voicing_mask"])
+    formants = data["formants"].item()
+    sr = int(data["sr"][0])
+    y_len = int(data["y_len"][0])
+    return env_spec, f0_interp, voicing_mask, formants, sr, y_len
 
 def f0_estimate(snd, fr_duration, f0_min=75, f0_max=950, voice_thresh=0.63, sil_thresh=0.01, voice_cost=0.01):
 
@@ -238,6 +406,21 @@ def lf_model_pulse(T, Ra=0.01, Rg=1.47, Rk=0.34, sr=44100, smoothing=False):
     if max_val > 0:
         pulse = pulse / max_val # normalised
     return pulse.astype(np.float32)
+
+def smooth_mask_ds(mask, sigma=100, ds=4):
+    if ds > 1:
+        short = mask[::ds].astype(np.float32)
+    else:
+        short = mask.astype(np.float32)
+    sig_short = max(1.0, sigma / max(1, ds))
+    short_s = gaussian_filter1d(short, sigma=sig_short)
+    if ds > 1:
+        x_old = np.linspace(0.0, 1.0, num=short_s.size, dtype=np.float32)
+        x_new = np.linspace(0.0, 1.0, num=mask.size, dtype=np.float32)
+        f = interp1d(x_old, short_s, kind='linear', fill_value='extrapolate')
+        return f(x_new).astype(np.float32)
+    else:
+        return short_s.astype(np.float32)
 
 def _smooth_arx_pulse(pulse, T0_samples):
     smoothed = pulse.copy() # copy pulse
@@ -535,27 +718,9 @@ def apply_vocal_roughness(y, f0_interp, voicing_mask, sr,
 
     return y + alpha_slewed * y_sub_hp
 
-def generate_noise(noise_type, length, sr):
-    if noise_type == 'white':
-        noise = np.random.randn(length)
-    elif noise_type == 'pink':
-        # 1/f filter in the freq-domain
-        X = np.fft.rfft(np.random.randn(length))
-        freqs = np.fft.rfftfreq(length, 1/sr)
-        # scale by 1/sqrt(f) (pink)
-        X /= np.maximum(freqs, 1.0)**0.5
-        noise = np.fft.irfft(X, n=length)
-    elif noise_type == 'brown':
-        # integrate white noise (1/f²)
-        wn = np.random.randn(length)
-        noise = np.cumsum(wn)
-    else:
-        raise ValueError(f"Unknown noise type: {noise_type}")
-    return noise / (np.max(np.abs(noise)) + 1e-8)
-
 def extract_features(y, sr, n_fft=1024, hop_length=256,
                      f0_min=75, f0_max=600, f0_merge_range=2):
-    window = np.hanning(n_fft)
+    window = get_cached_window(sr, n_fft)
     voicing_threshold = f0_min
     S_orig = stft(y, n_fft=n_fft, hop_length=hop_length, window=window)
     mag = np.abs(S_orig) + 1e-8
@@ -581,13 +746,14 @@ def extract_features(y, sr, n_fft=1024, hop_length=256,
 
     voicing_mask = (f0_interp > voicing_threshold).astype(float)
 
-    return env_spec, f0_interp, voicing_mask, formants
+    env_knots = compress_env_to_knots(env_spec, sr=sr, n_fft=n_fft, eps=1e-2, K_start=32, K_step=16, K_max=192)
+    return env_spec, f0_interp, voicing_mask, formants, env_knots
 
 def synthesize(env_spec, f0_interp, voicing_mask,
                y, sr, n_fft=1024, hop_length=256, glottal_smoothing=False,
                stretch_factor=1.0, start_sec=None, end_sec=None,
-               apply_brightness=True, normalize=1.0, noise_type='white',
-               uv_strength=0.5, breath_strength=0.0375, noise_transition_smoothness=100,
+               apply_brightness=True, normalize=1.0,
+               uv_strength=0.75, breath_strength=0.1, noise_transition_smoothness=100,
                pitch_shift=1.0, formant_shift=1.0,
                f0_jitter=False, f0_jitter_speed=100, f0_jitter_strength=1.5,
                volume_jitter=False, volume_vibrato=False, volume_jitter_speed=150, volume_jitter_strength_harm=50, volume_jitter_strength_breath=100,
@@ -596,7 +762,14 @@ def synthesize(env_spec, f0_interp, voicing_mask,
                F1_shift=1.0, F2_shift=1.0, F3_shift=1.0, F4_shift=1.0, formants=None,
                roughness_on=False, rough_k_list=(2,3,4), rough_h_list=None, rough_alpha=0.6,
                rough_hp_fc=320.0, rough_noise_amp=0.6, rough_noise_smooth_ms=120.0, rough_alpha_slew_ms=120.0):
-    window = np.hanning(n_fft)
+    window = get_cached_window(sr, n_fft)
+
+    if isinstance(env_spec, dict) and env_spec.get("mode") == "knots":
+        env_spec = decode_env_from_knots(env_spec)
+    env_spec = to_compute(env_spec)
+    f0_interp = to_compute(f0_interp)
+    voicing_mask = to_compute(voicing_mask)
+    y = to_compute(y)
 
     env_spec4breathiness = gaussian_filter1d(env_spec, sigma=1.75, axis=0)
 
@@ -680,14 +853,14 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
         if phase >= 1.0:
             T_sec = 1.0 / max(last_f0, 1e-6)
-            
-            # ARX model implemented
-            if T_sec not in pulse_cache:
-                pulse_cache[T_sec] = lf_model_pulse(
-                    T_sec, Ra=0.02, Rg=1.7, Rk=0.8, sr=sr
-                ).astype(np.float32)
+            T0_samples = int(round(sr * T_sec))
+            key = T0_samples
 
-            lf_pulse = pulse_cache[T_sec]
+            # ARX model implemented
+            if key not in pulse_cache:
+                pulse_cache[key] = lf_model_pulse(T_sec, Ra=0.02, Rg=1.7, Rk=0.8, sr=sr).astype(np.float32)
+            lf_pulse = pulse_cache[key]
+
             start = i
             end = min(len(pulse), start + len(lf_pulse))
             if end > start:
@@ -721,7 +894,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     S_harm = stft(pulse, n_fft=n_fft, hop_length=hop_length, window=window)
 
     # dynamic highpass based on F0 for better breathiness ig
-    freqs = np.fft.rfftfreq(n_fft, 1 / sr).reshape(-1, 1)  # (n_freq, 1)
+    freqs = get_cached_freqs(sr, n_fft)
     n_frames_harm = S_harm.shape[1]
     f0_env_frames = f0_interp[::hop_length]
     f0_env_frames = np.pad(f0_env_frames, (0, n_frames_harm - len(f0_env_frames)), mode='edge')
@@ -733,7 +906,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     highpass_mask = 1.0 / (1.0 + np.exp(-(freqs - cutoff) / sharpness))
 
     if cut_subharm_below_f0:
-        S_harm = S_harm * highpass_mask
+        S_harm *= highpass_mask
     if env_spec.shape[1] > S_harm.shape[1]:
         env_spec = env_spec[:, :S_harm.shape[1]]
     elif env_spec.shape[1] < S_harm.shape[1]:
@@ -742,15 +915,15 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     #log_time('    STFT')
     mag_harm = np.max(np.abs(S_harm) + 1e-8)
     freq_bins = S_harm.shape[0]
-    boost_curve = np.linspace(1, 100, freq_bins).reshape(-1, 1)
+    boost_curve = get_cached_boost(sr, n_fft)
+    bright_harm, bright_breath = get_cached_brightness(sr, n_fft)
 
     env_spec_4harm = env_spec
 
     S_harm = (S_harm / mag_harm) * env_spec_4harm
-    S_harm = S_harm * boost_curve
+    S_harm *= boost_curve
 
     if apply_brightness:
-        brightness_curve = create_brightness_curve(S_harm.shape[0], sr, 2000, 3500, gain_db=3.0)
         voiced_frames = voicing_mask[::hop_length]
         if voiced_frames.size < S_harm.shape[1]:
             voiced_frames = np.pad(voiced_frames, (0, S_harm.shape[1] - voiced_frames.size), mode='edge')
@@ -761,28 +934,24 @@ def synthesize(env_spec, f0_interp, voicing_mask,
         mask_v = (voiced_frames > 0)
         if np.any(mask_v):
             cols = np.nonzero(mask_v)[0]
-            harm_voiced[:, cols] *= brightness_curve
+            harm_voiced[:, cols] *= bright_harm
             harm_voiced[:, cols] = gaussian_filter(harm_voiced[:, cols], sigma=(0.5, 0))
         S_harm[:, :voiced_frames.size] = harm_voiced
 
     harmonic = istft(S_harm, hop_length=hop_length, window=window, length=len(y))
 
-    raw_noise = generate_noise(noise_type, len(y), sr)
-    S_noise = stft(raw_noise, n_fft=n_fft, hop_length=hop_length, window=window)
+    env_noise = match_env_frames(env_spec4breathiness, S_harm.shape[1]).astype(np.float32)
+    n_bins, T_frames = env_noise.shape
 
-    # Apply to noise
-    S_noise_filtered = S_noise * highpass_mask
+    rng = np.random.default_rng()
+    phi = rng.uniform(0.0, 2.0 * np.pi, size=(n_bins, T_frames)).astype(np.float32)
+    U = np.cos(phi) + 1j * np.sin(phi)
 
-    env_noise = match_env_frames(env_spec4breathiness, S_noise.shape[1])
-
-    mag_noise = np.abs(S_noise) + 1e-8
-    S_uv = (S_noise / mag_noise) * env_noise
-
-    mag_noise_breath = np.abs(S_noise_filtered) + 1e-8
-    S_breath = (S_noise_filtered  / mag_noise_breath) * env_noise
+    # Unvoiced: use full-band envelope; Breath: apply high-pass mask
+    S_uv = U * env_noise
+    S_breath = (U * env_noise) * highpass_mask
 
     if apply_brightness:
-        brightness_curve = create_brightness_curve(S_breath.shape[0], sr, 3500, 5000, gain_db=20.0)
         voiced_frames = voicing_mask[::hop_length]
         if voiced_frames.size < S_breath.shape[1]:
             voiced_frames = np.pad(voiced_frames, (0, S_breath.shape[1] - voiced_frames.size), mode='edge')
@@ -793,7 +962,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
         mask_v = (voiced_frames > 0)
         if np.any(mask_v):
             cols = np.nonzero(mask_v)[0]
-            breath_voiced[:, cols] *= brightness_curve
+            breath_voiced[:, cols] *= bright_breath
             breath_voiced[:, cols] = gaussian_filter(breath_voiced[:, cols], sigma=(0.5, 0))
 
         S_breath[:, :voiced_frames.size] = breath_voiced
@@ -802,7 +971,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     aper_uv = istft(S_uv, hop_length=hop_length, window=window, length=len(y))
 
     # Gain Control (Breathiness vs Unvoiced)
-    voicing_mask_smooth = gaussian_filter1d(voicing_mask, sigma=noise_transition_smoothness)
+    voicing_mask_smooth = smooth_mask_ds(voicing_mask, sigma=noise_transition_smoothness, ds=4)
     breathy_aper = aper_breath * voicing_mask_smooth * breath_strength
     noisy_aper = aper_uv * (1.0 - voicing_mask_smooth) * uv_strength
     aper_uv = noisy_aper
@@ -849,8 +1018,6 @@ if __name__ == "__main__":
 
     input_file = '_input.wav'
 
-    noise_type = 'white'  #'white' or 'brown' or 'pink'
-
     stretch_factor = 1.0
 
     pitch_shift = 1.0
@@ -892,8 +1059,7 @@ if __name__ == "__main__":
 
     reconstruct, harmonic, aper_uv, aper_bre= synthesize(
         env_spec, f0_interp, voicing_mask, y, sr,
-        n_fft=n_fft, hop_length=hop_length,
-        noise_type=noise_type, stretch_factor=stretch_factor,
+        n_fft=n_fft, hop_length=hop_length, stretch_factor=stretch_factor,
         pitch_shift=pitch_shift, formant_shift=formant_shift,
         formants=formants, F1_shift=F1, F2_shift=F2, F3_shift=F3, F4_shift=F4,
         f0_jitter=f0_jitter, volume_jitter=volume_jitter,
