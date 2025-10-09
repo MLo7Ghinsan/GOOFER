@@ -172,9 +172,9 @@ def process_file(audio_file):
         y, sr = sf.read(audio_file)
         if y.ndim > 1:
             y = y.mean(axis=1)
-        env, f0i, vmask, forms = gf.extract_features(y, sr)
+        env, f0i, vmask, forms, env_knots = gf.extract_features(y, sr)
         ylen = len(y)
-        gf.save_features(feat_file, env, f0i, vmask, forms, sr, ylen)
+        gf.save_features(feat_file, env_knots, f0i, vmask, forms, sr, ylen)
     except Exception as e:
         logging.error(f"[ERROR] Failed to extract {audio_file.name}: {str(e)}")
 
@@ -288,14 +288,16 @@ class GooferResampler:
         if feat.exists():
             logging.info('Loading cached features')
             env, f0i, vmask, forms, sr, ylen = gf.load_features(feat)
+            if isinstance(env, dict) and env.get("mode") == "knots":
+                env = gf.decode_env_from_knots(env)
         else:
             logging.info('Extracting features')
             y, sr = sf.read(self.in_file)
             if y.ndim > 1:
                 y = y.mean(axis=1)
-            env, f0i, vmask, forms = gf.extract_features(y, sr, n_fft=n_fft, hop_length=hop_length)
+            env, f0i, vmask, forms, env_knots = gf.extract_features(y, sr, n_fft=n_fft, hop_length=hop_length)
             ylen = len(y)
-            gf.save_features(feat, env, f0i, vmask, forms, sr, ylen)
+            gf.save_features(feat, env_knots, f0i, vmask, forms, sr, ylen)
 
         # Reverse features if flag R is set
         if self.reverse:
@@ -310,7 +312,8 @@ class GooferResampler:
 
     def resample(self, features):
         env_spec, f0_interp, voicing_mask, forms, sr, ylen = features
-
+        if isinstance(env_spec, dict) and env_spec.get("mode") == "knots":
+            env_spec = gf.decode_env_from_knots(env_spec)
         sample_length_sec = ylen / sr
 
         start_sec_base = self.offset
@@ -469,7 +472,7 @@ class GooferResampler:
 
         # concatenate pre and looped tail
         env_new  = np.concatenate([env_pre, env_tail_looped], axis=1)
-        f0_new   = np.concatenate([f0_pre, f0_tail_looped])
+        f0_new = np.concatenate([f0_pre, f0_tail_looped])
         mask_new = np.concatenate([mask_pre, mask_tail_looped])
 
         target_frames = env_new.shape[1]
@@ -865,7 +868,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v1.8'
+version = 'v2.0'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
