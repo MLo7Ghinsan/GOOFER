@@ -541,14 +541,11 @@ class GooferResampler:
         if vf != 0:
             vf = float(np.clip(vf, -100.0, 100.0))
 
-            n   = len(f0_new)
-            mid = n // 2
-            pos_cap = mid
-            neg_cap = n - mid
+            n = len(f0_new)
 
             if vf > 0:
                 # fry from start
-                L = int(round(pos_cap * (vf / 100.0)))
+                L = int(round(n * (vf / 100.0)))
                 if L > 0:
                     glide_len = int(round(L * (vl / 100.0)))
                     glide_len = np.clip(glide_len, 0, L)
@@ -568,7 +565,7 @@ class GooferResampler:
 
             elif vf < 0:
                 # fry from end
-                L = int(round(neg_cap * (abs(vf) / 100.0)))
+                L = int(round(n * (abs(vf) / 100.0)))
                 if L > 0:
                     glide_len = int(round(L * (vl / 100.0)))
                     glide_len = np.clip(glide_len, 0, L)
@@ -868,7 +865,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v2.0'
+version = 'v2.1'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
