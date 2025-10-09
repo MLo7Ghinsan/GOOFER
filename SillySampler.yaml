@@ -184,3 +184,14 @@ expressions:
     options:
     - R0
     - R1
+  edit:
+    name: SillyEditor
+    abbr: SEDI
+    type: Options
+    min: 0
+    max: 1
+    default_value: 0
+    is_flag: true
+    options:
+    - SE0
+    - SE1
