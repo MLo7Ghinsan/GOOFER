@@ -80,7 +80,7 @@ def pitch_string_to_cents(x):
         else:
             out += to_int12_stream(chunk[0])
     arr = np.array(out, dtype=np.float32)
-    return np.zeros_like(arr) if arr.size == 0 or np.all(arr == arr[0]) else np.concatenate([arr, [0.0]])
+    return arr if arr.size else np.array([0.0], dtype=np.float32) # nuke auto-zeroing
 
 def note_to_midi(n):
     m = note_re.match(n)
@@ -944,7 +944,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v2.2'
+version = 'v2.3'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
