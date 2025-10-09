@@ -25,3 +25,4 @@ ___
 | `R`  | `0`, `1`      | `0`   | Reverse sample: <br> `R0` = normal <br> `R1` = reversed |
 | `P`  | `0`-`100`      | `0`  | Normalizattion |
 | vf<br>vh<br>vl | -100-100<br>0-100<br>0-100 | 0<br>50<br>15 | Vocal fry: <br>`vf` = amount (positive = start, negative = end) <br>`vh` = base pitch in Hz <br>`vl` = pitch slide amount |
+| `SE`  | `0`, `1`      | `0`   | Enabling SillyEditor usage for voiced-unvoiced region specification |
