@@ -8,9 +8,36 @@ import numpy as np
 import soundfile as sf
 
 import GOOFER as gf
+from SillyEditor import interactive_voicing, edit_goofy_files, write_back_voicing_to_goofy
 
 n_fft = 1024
 hop_length = n_fft // 4
+
+def _src_tag_from_feat(feat_path: str) -> str:
+    stem = Path(feat_path).name
+    if stem.endswith("_features.goofy"):
+        return stem[:-len("_features.goofy")]
+    return Path(feat_path).stem
+
+def _invalidate_render_cache(out_path: str, feat_path: str):
+    try:
+        out_dir = Path(out_path).parent
+        tag = _src_tag_from_feat(feat_path)
+        # Nukes typical cached renders for this source
+        for p in out_dir.glob(f"{tag}*.wav"):
+            try:
+                p.unlink()
+                logging.info(f"[SE] Invalidated cache: {p.name}")
+            except Exception as e:
+                logging.warning(f"[SE] Could not delete {p}: {e}")
+        # Optional: remove small side-assets OU sometimes drops
+        for p in out_dir.glob(f"{tag}*.{{json,txt,lock}}"):
+            try:
+                p.unlink()
+            except Exception:
+                pass
+    except Exception as e:
+        logging.warning(f"[SE] Cache invalidate failed: {e}")
 
 logging.basicConfig(format='%(message)s', level=logging.INFO)
 
@@ -213,6 +240,10 @@ class GooferResampler:
         self.tempo      = float(tempo.lstrip('!'))
         self.bend       = pitch_string_to_cents(pitch_string)
 
+        # SillyEditor for v-uv
+        se_val = next((v for k, v in self.flags.items() if k.lower() == 'se'), 0)
+        self.use_editor = (se_val == 1)
+
         # gender flag
         self.formant_shift = 1.0 + (self.flags.get('g', 0) / 200.0)
 
@@ -288,6 +319,9 @@ class GooferResampler:
         if feat.exists():
             logging.info('Loading cached features')
             env, f0i, vmask, forms, sr, ylen = gf.load_features(feat)
+            y, _ = sf.read(self.in_file)
+            if y.ndim > 1:
+                y = y.mean(axis=1)
             if isinstance(env, dict) and env.get("mode") == "knots":
                 env = gf.decode_env_from_knots(env)
         else:
@@ -299,6 +333,9 @@ class GooferResampler:
             ylen = len(y)
             gf.save_features(feat, env_knots, f0i, vmask, forms, sr, ylen)
 
+        self._raw_y = y
+        self._sr = sr
+
         # Reverse features if flag R is set
         if self.reverse:
             logging.info('Reversing features (R flag)')
@@ -306,6 +343,7 @@ class GooferResampler:
             f0i = f0i[::-1]
             vmask = vmask[::-1]
             forms = {k: list(forms[k])[::-1] for k in forms}
+            self._raw_y = self._raw_y[::-1]
 
         features = (env, f0i, vmask, forms, sr, ylen)
         self.resample(features)
@@ -362,6 +400,48 @@ class GooferResampler:
         env_tail = env_spec[:, consonant_frame:end_frame]
         f0_tail  = f0_interp[consonant_sample:end_sample]
         mask_tail= voicing_mask[consonant_sample:end_sample]
+
+        ### voicing editor stuff (SE1 flag)
+        feat_path = str(self.in_file.with_name(f'{self.in_file.stem}_features.goofy'))
+
+        base_mask = np.concatenate([mask_pre, mask_tail]).astype(np.float32)
+
+        if self.use_editor:
+            # GUI always opens when SE1 is on
+            y_src = self._raw_y # mostlikely going to change
+            y_snip_raw = y_src[start_sample:end_sample].astype(np.float32)
+
+            ui_result = interactive_voicing(
+                y_snip_raw,
+                sr,
+                init_mask=base_mask,
+                title=f"Voicing: {self.in_file.name}"
+            )
+
+            if ui_result is not None and len(ui_result) == len(base_mask):
+                edited = ui_result.astype(np.float32)
+
+                write_back_voicing_to_goofy(
+                    feat_path,
+                    edited,
+                    start_sample,
+                    end_sample,
+                    self.reverse,
+                    ylen,
+                )
+
+                # use the edited mask for this render
+                e_pre  = edited[:len(mask_pre)]
+                e_tail = edited[len(mask_pre):]
+                mask_pre  = e_pre.astype(np.float32)
+                mask_tail = e_tail.astype(np.float32)
+
+                _invalidate_render_cache(str(self.out_file), feat_path)
+            else:
+                pass
+        else:
+            pass
+        ### End of SE1
 
         desired_tail_samples = int(self.length * sr)
 
@@ -790,7 +870,6 @@ class GooferResampler:
                 harmonic *= gain
                 aper_bre *= gain
 
-
         # apply volume and write output
         breath_scaled  = aper_bre * self.breathiness_mix
         uv_scaled      = aper_uv * self.unvoiced_mix
@@ -865,7 +944,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v2.1'
+version = 'v2.2'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
@@ -889,7 +968,12 @@ if __name__ == '__main__':
         args = sys.argv[1:]
         logging.info(f'Args: {args} (count={len(args)})')
         try:
-            if len(args) == 1:
+                # .goofy edit mode
+            if all(Path(a).suffix.lower() == ".goofy" for a in args):
+                edit_goofy_files(args)
+                sys.exit(0)
+
+            if len(args) == 1 and Path(args[0]).exists() and Path(args[0]).suffix.lower() != ".goofy":
                 # SLAY: Folder mode!!! :D Just extract features, nothing else.
                 input_path = Path(args[0])
                 if input_path.exists():
