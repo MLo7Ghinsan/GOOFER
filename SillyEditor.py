@@ -96,6 +96,8 @@ class SillyEditor:
             values=["both", "voiced", "unvoiced"], state="readonly", width=12
         )
         self.mode_combo.pack(side=tk.LEFT, padx=6)
+        self.mode_combo.configure(takefocus=False)
+        self.mode_combo.bind("<FocusIn>", lambda e: e.widget.selection_clear())
         self.mode_combo.bind("<<ComboboxSelected>>", lambda _e: (self._rebind_canvas(), self._draw()))
 
         # keyboard mode swaps (1=both, 2=voiced, 3=unvoiced)
@@ -410,7 +412,6 @@ class SillyEditor:
                 self.canvas.bind(f"<ButtonRelease-{b}>", self._end_paint)
 
         self._set_title()
-
 
 def interactive_voicing(y_snippet, sr, init_mask=None, title="Voicing Editor"):
     root = tk.Tk()
