@@ -28,6 +28,9 @@ class SillyEditor:
         self.playing = False
         self._play_stream = None
         self._play_job = None 
+        self.f0_full = None
+
+        self.edit_mode = tk.StringVar(value="both")  # both | voiced | unvoiced
 
         self.win = tk.Toplevel(parent)
         self.win.title(title)
@@ -90,7 +93,6 @@ class SillyEditor:
         ttk.Label(right, text="").pack(pady=8)
         mode_frame = ttk.Frame(right); mode_frame.pack(fill=tk.X)
         ttk.Label(mode_frame, text="Editing:").pack(side=tk.LEFT)
-        self.edit_mode = tk.StringVar(value="both")  # both | voiced | unvoiced
         self.mode_combo = ttk.Combobox(
             mode_frame, textvariable=self.edit_mode,
             values=["both", "voiced", "unvoiced"], state="readonly", width=12
@@ -99,6 +101,35 @@ class SillyEditor:
         self.mode_combo.configure(takefocus=False)
         self.mode_combo.bind("<FocusIn>", lambda e: e.widget.selection_clear())
         self.mode_combo.bind("<<ComboboxSelected>>", lambda _e: (self._rebind_canvas(), self._draw()))
+
+        f0_frame = ttk.Frame(right); f0_frame.pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(f0_frame, text="F0 brush (Hz)").pack(side=tk.LEFT)
+
+        self.f0_brush = tk.DoubleVar(value=120.0)
+        self.f0_value_lbl = ttk.Label(f0_frame, text="120 Hz")
+        self.f0_value_lbl.pack(side=tk.RIGHT)
+
+        def _fmt_f0(v):
+            try:
+                return f"{int(round(float(v)))} Hz"
+            except Exception:
+                return "- Hz"
+
+        def _on_f0_changed(v):
+            self.f0_value_lbl.config(text=_fmt_f0(v))
+
+        self.f0_slider = ttk.Scale(
+            right, from_=50, to=500, orient=tk.HORIZONTAL,
+            variable=self.f0_brush, command=_on_f0_changed
+        )
+        _on_f0_changed(self.f0_brush.get())
+        self.f0_slider.set(120)
+        self.f0_slider.pack(fill=tk.X, padx=6, pady=(4, 0))
+
+        self.f0_slider.bind("<ButtonRelease-1>", lambda _e: self._apply_f0_after_slider())
+        self.f0_slider.bind("<ButtonRelease-2>", lambda _e: self._apply_f0_after_slider())
+        self.f0_slider.bind("<ButtonRelease-3>", lambda _e: self._apply_f0_after_slider())
+        self.f0_slider.bind("<KeyRelease>", lambda _e: self._apply_f0_after_slider())
 
         # keyboard mode swaps (1=both, 2=voiced, 3=unvoiced)
         self.win.bind("1", lambda _e: (self.edit_mode.set("both"), self._rebind_canvas(), self._draw()))
@@ -115,6 +146,23 @@ class SillyEditor:
 
         self._draw()
 
+    def _apply_f0_after_slider(self):
+        if self.f0_full is None:
+            return
+        a, b = 0, self.N # whole file
+        if b <= a:
+            return
+        f0v = float(self.f0_brush.get())
+        if f0v < 50.0: f0v = 50.0
+        elif f0v > 500.0: f0v = 500.0
+
+        voiced = self.mask_full[a:b] > 0.5
+        seg = self.f0_full[a:b].copy()
+        seg[voiced] = f0v
+        seg[~voiced] = 0.0
+        self.f0_full[a:b] = seg
+        self._draw()
+        
     # playback
     def _synthesize_preview(self):
         try:
@@ -134,7 +182,8 @@ class SillyEditor:
 
             # per-sample segments (copy)
             vmask_seg = np.array(self.mask_full[start:end], dtype=np.float32, copy=True)
-            f0_seg = np.array(f0i0[start:end], dtype=np.float32, copy=True)
+            src_f0 = self.f0_full if (self.f0_full is not None) else f0i0
+            f0_seg = np.array(src_f0[start:end], dtype=np.float32, copy=True)
 
             # If painted voicing (mask=1) where f0==0, fill F0 by nearest/connected values
             need_fill = (vmask_seg > 0.5) & (f0_seg <= 0.0)
@@ -295,6 +344,11 @@ class SillyEditor:
         a = int(self.view_idx[i0])
         b = int(self.view_idx[i1]) + 1
         self.mask_full[a:b] = val
+        if self.f0_full is not None:
+            if voiced:
+                self.f0_full[a:b] = float(self.f0_brush.get())
+            else:
+                self.f0_full[a:b] = 0.0
         self._draw()
 
     def _begin_voiced(self, e):
@@ -370,6 +424,28 @@ class SillyEditor:
             text=f"{hint} | {sec_start:.2f}s–{sec_end:.2f}s | Zoom={self.zoom:.1f}x",
             fill="#ffffff"
         )
+
+    def _init_tracks(self):
+        try:
+            _, f0i0, _, _, _, ylen0 = self.features
+            target = int(ylen0)
+            f0i0 = np.asarray(f0i0, dtype=np.float32)
+            if f0i0.shape[0] != target:
+                if f0i0.shape[0] > target:
+                    f0i0 = f0i0[:target]
+                else:
+                    f0i0 = np.pad(f0i0, (0, target - f0i0.shape[0]), mode="edge")
+            self.f0_full = f0i0.copy()
+
+            f0v = float(self.f0_brush.get())
+            if f0v < 50.0: f0v = 50.0
+            elif f0v > 500.0: f0v = 500.0
+
+            voiced = (self.mask_full[:target] > 0.5)
+            self.f0_full[:target][voiced] = f0v
+            self.f0_full[:target][~voiced] = 0.0
+        except Exception:
+            self.f0_full = None
 
     def _begin_single(self, e, voiced: bool):
         self._painting = ("voiced" if voiced else "unvoiced", e.x)
@@ -523,6 +599,7 @@ def edit_goofy_files(goofy_paths, n_fft=1024, hop_length=256):
             root.withdraw()
             ui = SillyEditor(root, y_for_ui.astype(np.float32), sr0, init_mask=init_mask, title=f"Voicing: {p.name}")
             ui.features = (env0, f0i0, vmask0, forms0, sr0, ylen0)
+            ui._init_tracks()
             root.wait_window(ui.win)
             ui_mask = ui.mask_full.astype(np.float32) if ui.ok else None
             try:
@@ -541,8 +618,18 @@ def edit_goofy_files(goofy_paths, n_fft=1024, hop_length=256):
                 else:
                     ui_mask = np.pad(ui_mask, (0, target_len - ui_mask.shape[0]), mode="edge")
 
+            out_f0 = np.asarray(f0i0, dtype=np.float32)
+            if getattr(ui, "f0_full", None) is not None:
+                out_f0 = np.asarray(ui.f0_full, dtype=np.float32)
+
+            if out_f0.shape[0] != target_len:
+                if out_f0.shape[0] > target_len:
+                    out_f0 = out_f0[:target_len]
+                else:
+                    out_f0 = np.pad(out_f0, (0, target_len - out_f0.shape[0]), mode="edge")
+
             tmp_path = str(p) + ".tmp"
-            gf.save_features(tmp_path, env0, f0i0, ui_mask, forms0, sr0, target_len)
+            gf.save_features(tmp_path, env0, out_f0, ui_mask, forms0, sr0, target_len)
             os.replace(tmp_path, str(p))
             logging.info(f"[GOOFY] Saved edits {p.name}")
 
