@@ -87,17 +87,28 @@ class SillyEditor:
         ttk.Button(right, text="Apply", command=self._ok).pack(fill=tk.X, pady=(0, 12))
         ttk.Label(right, text="").pack(pady=4)  # spacer
         ttk.Button(right, text="Cancel", command=self._cancel).pack(fill=tk.X)
+        ttk.Label(right, text="").pack(pady=8)
+        mode_frame = ttk.Frame(right); mode_frame.pack(fill=tk.X)
+        ttk.Label(mode_frame, text="Editing:").pack(side=tk.LEFT)
+        self.edit_mode = tk.StringVar(value="both")  # both | voiced | unvoiced
+        self.mode_combo = ttk.Combobox(
+            mode_frame, textvariable=self.edit_mode,
+            values=["both", "voiced", "unvoiced"], state="readonly", width=12
+        )
+        self.mode_combo.pack(side=tk.LEFT, padx=6)
+        self.mode_combo.bind("<<ComboboxSelected>>", lambda _e: (self._rebind_canvas(), self._draw()))
+
+        # keyboard mode swaps (1=both, 2=voiced, 3=unvoiced)
+        self.win.bind("1", lambda _e: (self.edit_mode.set("both"), self._rebind_canvas(), self._draw()))
+        self.win.bind("2", lambda _e: (self.edit_mode.set("voiced"), self._rebind_canvas(), self._draw()))
+        self.win.bind("3", lambda _e: (self.edit_mode.set("unvoiced"), self._rebind_canvas(), self._draw()))
+
+        self._set_title()
 
         self._update_view()
         self.wave_rect = (10, 10, 740, 210)
 
-        # bindings
-        self.canvas.bind("<Button-1>", self._begin_voiced)
-        self.canvas.bind("<B1-Motion>", self._paint_motion)
-        self.canvas.bind("<ButtonRelease-1>", self._end_paint)
-        self.canvas.bind("<Button-3>", self._begin_unvoiced)
-        self.canvas.bind("<B3-Motion>", self._paint_motion)
-        self.canvas.bind("<ButtonRelease-3>", self._end_paint)
+        self._rebind_canvas()
         self.canvas.bind("<Configure>", self._on_resize)
 
         self._draw()
@@ -278,9 +289,9 @@ class SillyEditor:
         i0 = self._x_to_view_i(min(x0, x1))
         i1 = self._x_to_view_i(max(x0, x1))
         val = 1.0 if voiced else 0.0
-        self.view_mask[i0:i1 + 1] = val
-        a = self.start_sample + (self.view_idx[i0] - self.start_sample)
-        b = self.start_sample + (self.view_idx[i1] - self.start_sample)
+        self.view_mask[i0:i1+1] = val
+        a = int(self.view_idx[i0])
+        b = int(self.view_idx[i1]) + 1
         self.mask_full[a:b] = val
         self._draw()
 
@@ -346,11 +357,60 @@ class SillyEditor:
 
         sec_start = self.start_sample / self.sr
         sec_end = self.end_sample / self.sr
+        hint = ""
+        if self.edit_mode.get() == "both":
+            hint = "LMB=voiced | RMB=unvoiced"
+        else:
+            hint = f"Editing: {self.edit_mode.get()} (any click/drag)"
+
         c.create_text(
             x0 + 8, y0 + 12, anchor="w",
-            text=f"LMB=voiced • RMB=unvoiced • {sec_start:.2f}s–{sec_end:.2f}s • Zoom={self.zoom:.1f}x",
+            text=f"{hint} | {sec_start:.2f}s–{sec_end:.2f}s | Zoom={self.zoom:.1f}x",
             fill="#ffffff"
         )
+
+    def _begin_single(self, e, voiced: bool):
+        self._painting = ("voiced" if voiced else "unvoiced", e.x)
+        self._apply_paint(e.x, e.x, voiced)
+
+    def _set_title(self):
+        self.win.title(f"{self.win.title().split(' - ')[0]} - {self.edit_mode.get().title()}")
+
+    def _rebind_canvas(self):
+        # clear old stuff...
+        for seq in ("<Button-1>","<B1-Motion>","<ButtonRelease-1>",
+                    "<Button-2>","<B2-Motion>","<ButtonRelease-2>",
+                    "<Button-3>","<B3-Motion>","<ButtonRelease-3>"):
+            self.canvas.unbind(seq)
+
+        mode = self.edit_mode.get()
+        if mode == "both":
+            # LMB = voiced
+            self.canvas.bind("<Button-1>", self._begin_voiced)
+            self.canvas.bind("<B1-Motion>", self._paint_motion)
+            self.canvas.bind("<ButtonRelease-1>", self._end_paint)
+            # RMB = unvoiced
+            self.canvas.bind("<Button-3>", self._begin_unvoiced)
+            self.canvas.bind("<B3-Motion>", self._paint_motion)
+            self.canvas.bind("<ButtonRelease-3>", self._end_paint)
+            self.canvas.bind("<Button-2>", self._begin_unvoiced)
+            self.canvas.bind("<B2-Motion>", self._paint_motion)
+            self.canvas.bind("<ButtonRelease-2>", self._end_paint)
+
+        elif mode == "voiced":
+            for b in ("1","2","3"):
+                self.canvas.bind(f"<Button-{b}>", lambda e: self._begin_single(e, True))
+                self.canvas.bind(f"<B{b}-Motion>", self._paint_motion)
+                self.canvas.bind(f"<ButtonRelease-{b}>", self._end_paint)
+
+        else: # unvoiced
+            for b in ("1","2","3"):
+                self.canvas.bind(f"<Button-{b}>", lambda e: self._begin_single(e, False))
+                self.canvas.bind(f"<B{b}-Motion>", self._paint_motion)
+                self.canvas.bind(f"<ButtonRelease-{b}>", self._end_paint)
+
+        self._set_title()
+
 
 def interactive_voicing(y_snippet, sr, init_mask=None, title="Voicing Editor"):
     root = tk.Tk()
