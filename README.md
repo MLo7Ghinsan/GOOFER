@@ -10,9 +10,9 @@ ___
 | `fb` | `-100`-`100`  | `0` | Scale Formant 2 (F2)  |
 | `fc` | `-100`-`100`  | `0` | Scale Formant 3 (F3)  |
 | `fd` | `-100`-`100`  | `0` | Scale Formant 4 (F4)  |
-| `V`  | `0`-`100`     | `100` | Harmonic (voiced) level. `0` = no harmonic, `100` = full voice |
-| `B`  | `-100`-`100`  | `0`   | Breathiness level. `-100` = none, `0` = raw, `100` = 2x louder |
-| `U`  | `-100`-`100`  | `0`   | Unvoiced (fricative) level. `-100` = none, `0` = raw, `100` = 2x louder |
+| `V`  | `0`-`100`     | `100` | Harmonic (voiced) level:<br>`0` = no harmonic<br>`100` = full voice |
+| `B`  | `-100`-`100`  | `0`   | Breathiness level:<br>`-100` = none<br>`0` = raw<br>`100` = 2x louder |
+| `U`  | `-100`-`100`  | `0`   | Unvoiced (fricative) level:<br>`-100` = none<br>`0` = raw<br>`100` = 2x louder |
 | `sh` | `0`-`100`     | `0`   | F0 jitter (pitch instability). Harsh vocal effect |
 | `sr` | `0`-`100`     | `0`   | Volume jitter (voiced only). Rough vocal effect |
 | `st` | `0`-`100`     | `0`   | Tension effect (attempt to) |
@@ -22,7 +22,7 @@ ___
 | `sa` | `0`-`100`     | `0`   | Blend mix of full noise. Whisper growl effect |
 | `su` | `0`-`100`     | `0`   | Subharmonics strength |
 | `br` | `-100`-`100`  | `0`   | Spectral envelope tilt, Brightness effect |
-| `es` | `-100`-`100`  | `0`   | Spectral envelope smoothing/sharpening. Low = turn voice into nasal buzz, High = give vocal more metallically clearer quality |
+| `es` | `-100`-`100`  | `0`   | Spectral envelope smoothing/sharpening:<br>Low = turn voice into nasal buzz<br>High = give vocal more metallically clearer quality |
 | `pd` | `-100`-`100`  | `0`   | Dynamic fluctuation based on pitch curve |
 | `FV`  | `0`, `1`     | `0`   | Force the whole note to become voiced |
 | `L`  | `0`, `1`, `2` | `0`   | Sustain behavior: <br> `L0` = concat loop <br> `L1` = averaged mirror loop <br> `L2` = stretch|
