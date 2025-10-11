@@ -1,6 +1,6 @@
 # GOOFER (Work in progress)
 ___
-# Flag List (SillySampler)
+# Flag List (SillySampler) | count: 28
 
 | Flag | Range    | Default | Description |
 |------|----------|---------|-------------|
