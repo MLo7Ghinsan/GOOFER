@@ -319,6 +319,14 @@ class GooferResampler:
         es_raw = next((v for k, v in self.flags.items() if k.lower() == 'es'), 0) or 0
         self.env_shape = float(np.clip(es_raw, -100, 100)) / 100.0
 
+        # force voiced flag (funny)
+        self.force_voiced = (self.flags.get('FV', 0) == 1)
+
+        # dynamics based on pitch flag
+        pd_raw = next((v for k, v in self.flags.items() if k.lower() == 'pd'), 0) or 0
+        pd_raw = int(np.clip(pd_raw, -100, 100))
+        self.pitch_dyn = float(pd_raw) / 100.0
+
         self.render()
 
     def render(self):
@@ -501,6 +509,13 @@ class GooferResampler:
             pass
         ### End of SE1
 
+        # force voiced flag
+        if self.force_voiced:
+            if mask_pre.size:
+                mask_pre[:] = 1.0
+            if mask_tail.size:
+                mask_tail[:] = 1.0
+
         desired_tail_samples = int(self.length * sr)
 
         # Loop (tile) envelope frames for sustain... 
@@ -668,6 +683,32 @@ class GooferResampler:
         t_clamped = np.clip(t_samples, t_pitch[0], t_pitch[-1])
         midi_curve = pitch_interp(t_clamped)
         f0_new = mask_new * midi_to_hz(midi_curve)
+
+        # pitch to dynamic flag thingy
+        self.dyn_gain = None
+        if self.pitch_dyn != 0.0:
+            t_cents = self.flags.get('t', 0) or 0
+            baseline_midi = self.pitch_m + (t_cents / 100.0)
+
+            bend_semi = (midi_curve - baseline_midi).astype(np.float32)
+
+            sigma_samp = max(1, int(0.010 * sr))
+            bend_s = gf.gaussian_filter1d(bend_semi, sigma=sigma_samp)
+
+            ref = float(np.percentile(np.abs(bend_s), 95)) + 1e-8
+            v = np.clip(bend_s / ref, -1.0, 1.0)
+            signed = v if self.pitch_dyn > 0 else -v
+
+            max_db = 12.0
+            amt_db = max_db * abs(self.pitch_dyn)
+            gain_db = amt_db * signed
+
+            self.dyn_gain = np.power(10.0, gain_db / 20.0).astype(np.float32)
+            self.dyn_gain = np.clip(self.dyn_gain, 1e-3, 1e3)
+
+            # only work on voiced
+            vmask_s = gf.gaussian_filter1d(mask_new.astype(np.float32), sigma=int(0.01 * sr))
+            self.dyn_gain = 1.0 + (self.dyn_gain - 1.0) * vmask_s
 
         ### FRY STUFF 1
         vf = float(self.flags.get('vf', 0)) # amount & direction
@@ -960,6 +1001,16 @@ class GooferResampler:
             mix = self.aperiodic_mix
             out = out * (1.0 - mix) + (aperiodic_uncorr * self.volume) * mix
 
+        if getattr(self, "dyn_gain", None) is not None:
+            if len(self.dyn_gain) != len(out):
+                x_old = np.linspace(0.0, 1.0, num=len(self.dyn_gain), dtype=np.float32)
+                x_new = np.linspace(0.0, 1.0, num=len(out),          dtype=np.float32)
+                interp = gf.interp1d(x_old, self.dyn_gain, kind='linear', fill_value='extrapolate')
+                gain = interp(x_new).astype(np.float32)
+            else:
+                gain = self.dyn_gain
+            out *= gain
+
         logging.info(f'Writing {self.out_file}')
         sf.write(self.out_file, out, sr)
 
@@ -1002,7 +1053,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v2.4'
+version = 'v2.5'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
