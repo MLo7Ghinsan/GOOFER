@@ -247,6 +247,9 @@ class GooferResampler:
         # gender flag
         self.formant_shift = 1.0 + (self.flags.get('g', 0) / 200.0)
 
+        # brightness flag
+        self.brightness_env = (self.flags.get('br', 0) + 100) / 100.0
+
         # formants band flag
         self.F1_shift = 1.0 + (self.flags.get('fa', 0) / 100.0)
         self.F2_shift = 1.0 + (self.flags.get('fb', 0) / 100.0)
@@ -311,6 +314,10 @@ class GooferResampler:
 
         # normalization flag
         self.normalize = (np.clip(self.flags['P'], 0, 100) / 100.0) if 'P' in self.flags else 1.0
+
+        # env smoothing/sharping flag
+        es_raw = next((v for k, v in self.flags.items() if k.lower() == 'es'), 0) or 0
+        self.env_shape = float(np.clip(es_raw, -100, 100)) / 100.0
 
         self.render()
 
@@ -400,6 +407,57 @@ class GooferResampler:
         env_tail = env_spec[:, consonant_frame:end_frame]
         f0_tail  = f0_interp[consonant_sample:end_sample]
         mask_tail= voicing_mask[consonant_sample:end_sample]
+
+        # brightness flag
+        if self.brightness_env != 1.0:
+            if env_pre.size or env_tail.size:
+                n_bins = (env_pre if env_pre.size else env_tail).shape[0]
+                freqs = np.linspace(1e-6, sr * 0.5, n_bins, dtype=np.float32)
+                norm_f = np.clip(freqs / (sr * 0.5), 0.02, 1.0)
+                alpha = np.clip(self.brightness_env - 1.0, -0.9, 1.0)
+                tilt = norm_f ** alpha
+                tilt /= (tilt.mean() + 1e-12)
+
+                if env_pre.size:
+                    env_pre *= tilt[:, None].astype(env_pre.dtype)
+                if env_tail.size:
+                    env_tail *= tilt[:, None].astype(env_tail.dtype)
+
+        # envelope smoothing/sharping stuff
+        if self.env_shape != 0.0 and (env_pre.size or env_tail.size):
+            def match_frame_means(orig, mod):
+                m0 = np.mean(orig, axis=0, keepdims=True)
+                m1 = np.mean(mod,  axis=0, keepdims=True)
+                return (mod * (m0 / (m1 + 1e-12))).astype(orig.dtype)
+
+            s = abs(self.env_shape)
+
+            sigma_sm = 1.0 + 6.0 * s
+            sigma_sh = 0.8 + 4.0 * s
+            amount = 5 * s
+
+            def smooth(block):
+                if not block.size: return block
+                src = block
+                blur = gf.gaussian_filter1d(block, sigma=sigma_sm, axis=0)
+                out = match_frame_means(src, blur)
+                return np.maximum(0.0, out)
+
+            def sharpen(block):
+                if not block.size: return block
+                src = block
+                blur = gf.gaussian_filter1d(block, sigma=sigma_sh, axis=0)
+                out = src + amount * (src - blur)
+                out = np.maximum(0.0, out)
+                out = match_frame_means(src, out)
+                return out
+
+            if self.env_shape < 0.0:
+                if env_pre.size:  env_pre  = smooth(env_pre)
+                if env_tail.size: env_tail = smooth(env_tail)
+            else:
+                if env_pre.size:  env_pre  = sharpen(env_pre)
+                if env_tail.size: env_tail = sharpen(env_tail)
 
         ### voicing editor stuff (SE1 flag)
         feat_path = str(self.in_file.with_name(f'{self.in_file.stem}_features.goofy'))
@@ -944,7 +1002,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v2.3'
+version = 'v2.4'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
