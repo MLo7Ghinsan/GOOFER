@@ -17,6 +17,15 @@ expressions:
     default_value: 0
     is_flag: true
     flag: fw
+  fmst:
+    name: Formant Strength Global (SillySampler)
+    abbr: S_FT
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: fst
   SF1:
     name: Scale Formant (F1) (SillySampler)
     abbr: S_F1
