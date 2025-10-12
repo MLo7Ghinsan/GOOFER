@@ -44,7 +44,7 @@ logging.basicConfig(format='%(message)s', level=logging.INFO)
 # --- UTAU pitch & flags parsing --------------------------------------------
 notes = {'C':0,'C#':1,'D':2,'D#':3,'E':4,'F':5,'F#':6,'G':7,'G#':8,'A':9,'A#':10,'B':11}
 note_re = re.compile(r'([A-G]#?)(-?\d+)')
-flag_re = re.compile(r'([A-Za-z]{1,2})([+-]?\d+)?')
+flag_re = re.compile(r'([A-Za-z]{1,4})([+-]?\d+)?')
 
 def parse_flags(flag_string):
     flags = {}
@@ -217,6 +217,49 @@ def extract_features_recursive(input_path):
 
     logging.info(f"[DONE] Extracted features from {len(audio_files)} files using {num_threads} threads.")
 
+def canon_formants(d, n_frames):
+    # remapping
+    out = {}
+    for k, v in d.items():
+        if isinstance(k, int):
+            name = f'F{k}'
+        elif isinstance(k, str) and k.upper().startswith('F'):
+            name = k.upper()
+        else:
+            try:
+                name = f'F{int(k)}'
+            except Exception:
+                continue
+
+        arr = np.asarray(v, dtype=np.float32)
+        if len(arr) < n_frames:
+            arr = np.pad(arr, (0, n_frames - len(arr)), mode='edge')
+        elif len(arr) > n_frames:
+            arr = arr[:n_frames]
+        out[name] = arr
+    return out
+
+def sanitize_smooth_formant(track, T, sr, min_hz=120.0, max_hz=None, sigma_frames=3):
+    max_hz = max_hz or (sr * 0.48)
+    x = np.asarray(track, dtype=np.float32)
+    if len(x) < T:  # in case
+        x = np.pad(x, (0, T - len(x)), mode='edge')
+    elif len(x) > T:
+        x = x[:T]
+
+    bad = (~np.isfinite(x)) | (x < min_hz) | (x > max_hz)
+    if np.any(bad):
+        good_idx = np.where(~bad)[0]
+        if good_idx.size:
+            f = gf.interp1d(good_idx.astype(np.float32), x[~bad], kind='linear', fill_value='extrapolate')
+            x[bad] = f(np.where(bad)[0].astype(np.float32))
+        else:
+            x = np.full_like(x, 300.0)
+
+    if sigma_frames > 0:
+        x = gf.gaussian_filter1d(x, sigma=sigma_frames)
+    return x.astype(np.float32)
+
 class GooferResampler:
     def __init__(
         self,
@@ -326,6 +369,19 @@ class GooferResampler:
         pd_raw = next((v for k, v in self.flags.items() if k.lower() == 'pd'), 0) or 0
         pd_raw = int(np.clip(pd_raw, -100, 100))
         self.pitch_dyn = float(pd_raw) / 100.0
+
+        # formant width expansion flag
+        self.formant_width = ((self.flags.get('fw', 0) or 0) / 100.0) * 0.1
+
+        # formant strength flags
+        fbw_raw = float(np.clip(self.flags.get('fst', 0) or 0, -100, 100))
+        self.formant_strength_global = fbw_raw / 100.0
+
+        # individual formant strength
+        self.formant_strength_f1 = float(self.flags.get('fsta', self.formant_strength_global * 100)) / 100.0
+        self.formant_strength_f2 = float(self.flags.get('fstb', self.formant_strength_global * 100)) / 100.0
+        self.formant_strength_f3 = float(self.flags.get('fstc', self.formant_strength_global * 100)) / 100.0
+        self.formant_strength_f4 = float(self.flags.get('fstd', self.formant_strength_global * 100)) / 100.0
 
         self.render()
 
@@ -466,6 +522,29 @@ class GooferResampler:
             else:
                 if env_pre.size:  env_pre  = sharpen(env_pre)
                 if env_tail.size: env_tail = sharpen(env_tail)
+
+        # formant width expansion flag
+        if self.formant_width != 0.0 and env_spec.size:
+            def warp_envelope_bandwidth(env, amount):
+                n_bins, n_frames = env.shape
+                bins = np.arange(n_bins, dtype=np.float64)
+                center = n_bins / 2.0
+                # expansion curve stretch away from center if positive
+                warped = (bins - center) * (1.0 + amount) + center
+                warped = np.clip(warped, 0, n_bins - 1)
+                lo = np.floor(warped).astype(int)
+                hi = np.minimum(lo + 1, n_bins - 1)
+                frac = warped - lo
+                out = np.empty_like(env)
+                for i in range(n_frames):
+                    col = env[:, i]
+                    out[:, i] = (1 - frac) * col[lo] + frac * col[hi]
+                return out
+
+            if env_pre.size:
+                env_pre = warp_envelope_bandwidth(env_pre, self.formant_width)
+            if env_tail.size:
+                env_tail = warp_envelope_bandwidth(env_tail, self.formant_width)
 
         ### voicing editor stuff (SE1 flag)
         feat_path = str(self.in_file.with_name(f'{self.in_file.stem}_features.goofy'))
@@ -661,6 +740,51 @@ class GooferResampler:
 
             f0_new   = stretch_prefix_1d(f0_new,   pre_samples, vel_factor)
             mask_new = stretch_prefix_1d(mask_new, pre_samples, vel_factor)
+
+
+        ### formant strength stuff
+        formants_new = canon_formants(formants_new, target_frames)
+        strength_vals = [
+            self.formant_strength_f1,
+            self.formant_strength_f2,
+            self.formant_strength_f3,
+            self.formant_strength_f4,
+        ]
+
+        # pull tracks ,fall back to zeros if missing
+        T = env_new.shape[1]
+        F1 = sanitize_smooth_formant(formants_new.get('F1', np.zeros(T)), T, sr, min_hz=120.0, sigma_frames=4)
+        F2 = sanitize_smooth_formant(formants_new.get('F2', np.zeros(T)), T, sr, min_hz=300.0, sigma_frames=4)
+        F3 = sanitize_smooth_formant(formants_new.get('F3', np.zeros(T)), T, sr, min_hz=1500.0, sigma_frames=4)
+        F4 = sanitize_smooth_formant(formants_new.get('F4', np.zeros(T)), T, sr, min_hz=2000.0, sigma_frames=4)
+        Fs = [F1, F2, F3, F4]
+
+        n_bins = env_new.shape[0]
+        freqs = np.linspace(0.0, sr / 2.0, n_bins, dtype=np.float32)
+
+        gain_env = np.ones_like(env_new, dtype=np.float32)
+
+        # how wide each formant’s influence bell is in hz
+        sigma_hz_list = [100.0, 200.0, 350.0, 500.0]
+
+        # probably needs vectorize
+        for t in range(T):
+            for k, (Ftrack, s_val) in enumerate(zip(Fs, strength_vals)):
+                if abs(s_val) < 1e-6:
+                    continue
+                f0 = float(Ftrack[t])
+                if not np.isfinite(f0) or f0 <= 50.0 or f0 >= (sr * 0.5):
+                    continue
+
+                sigma_hz = sigma_hz_list[k]
+                weight = np.exp(-0.5 * ((freqs - f0) / sigma_hz) ** 2).astype(np.float32)
+
+                gain = 1.0 + s_val
+
+                gain_env[:, t] *= 1.0 + (gain - 1.0) * weight
+
+        env_new *= gain_env
+        ### end formant strength stuff
 
         # thank you straycat
         n_total   = len(f0_new)
@@ -1053,7 +1177,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v2.5'
+version = 'v2.6'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
