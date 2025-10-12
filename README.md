@@ -1,15 +1,21 @@
 # GOOFER (Work in progress)
 ___
-# Flag List (SillySampler) | count: 28
+# Flag List (SillySampler) | count: 34
 
 | Flag | Range    | Default | Description |
 |------|----------|---------|-------------|
 | `t`  | `-100`-`100`  | `0`   | Pitch offset flag |
-| `g`  | `-100`-`100`  | `0` | Global formant shift  |
-| `fa` | `-100`-`100`  | `0` | Scale Formant 1 (F1)  |
-| `fb` | `-100`-`100`  | `0` | Scale Formant 2 (F2)  |
-| `fc` | `-100`-`100`  | `0` | Scale Formant 3 (F3)  |
-| `fd` | `-100`-`100`  | `0` | Scale Formant 4 (F4)  |
+| `g`  | `-100`-`100`  | `0` | Global formant shift. Gender effect |
+| `fa` | `-100`-`100`  | `0` | Scale formant 1 (F1)  |
+| `fb` | `-100`-`100`  | `0` | Scale formant 2 (F2)  |
+| `fc` | `-100`-`100`  | `0` | Scale formant 3 (F3)  |
+| `fd` | `-100`-`100`  | `0` | Scale formant 4 (F4)  |
+| `fw` | `-100`-`100`  | `0` | Formant width adjustment  |
+| `fst` | `-100`-`100` | `0` | Formant bands strength. Mouth opening-like effect |
+| `fsta` | `-100`-`100`| `0` | Strength formant 1 (F1)  |
+| `fstb` | `-100`-`100`| `0` | Strength formant 2 (F2)  |
+| `fstc` | `-100`-`100`| `0` | Strength formant 3 (F3)  |
+| `fstd` | `-100`-`100`| `0` | Strength formant 4 (F4)  |
 | `V`  | `0`-`100`     | `100` | Harmonic (voiced) level:<br>`0` = no harmonic<br>`100` = full voice |
 | `B`  | `-100`-`100`  | `0`   | Breathiness level:<br>`-100` = none<br>`0` = raw<br>`100` = 2x louder |
 | `U`  | `-100`-`100`  | `0`   | Unvoiced (fricative) level:<br>`-100` = none<br>`0` = raw<br>`100` = 2x louder |
