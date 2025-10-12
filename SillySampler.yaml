@@ -8,6 +8,15 @@ expressions:
     default_value: 0
     is_flag: true
     flag: t
+  fmwd:
+    name: Formant Width (SillySampler)
+    abbr: S_FW
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: fw
   SF1:
     name: Scale Formant (F1) (SillySampler)
     abbr: S_F1
@@ -44,6 +53,42 @@ expressions:
     default_value: 0
     is_flag: true
     flag: fd
+  STF1:
+    name: Strength Formant (F1) (SillySampler)
+    abbr: STF1
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: fsta
+  STF2:
+    name: Strength Formant (F2) (SillySampler)
+    abbr: STF2
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: fstb
+  STF3:
+    name: Strength Formant (F3) (SillySampler)
+    abbr: STF3
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: fstc
+  STF4:
+    name: Strength Formant (F4) (SillySampler)
+    abbr: STF4
+    type: Numerical
+    min: -100
+    max: 100
+    default_value: 0
+    is_flag: true
+    flag: fstd
   Hvoi:
     name: Voiced Harmonics (SillySampler)
     abbr: S_V
