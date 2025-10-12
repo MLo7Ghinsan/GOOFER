@@ -374,14 +374,19 @@ class GooferResampler:
         self.formant_width = ((self.flags.get('fw', 0) or 0) / 100.0) * 0.1
 
         # formant strength flags
-        fbw_raw = float(np.clip(self.flags.get('fst', 0) or 0, -100, 100))
-        self.formant_strength_global = fbw_raw / 100.0
+        fst_val = next((v for k, v in self.flags.items() if k.lower() == 'fst'), 0) or 0
+        self.formant_strength_global = float(np.clip(fst_val, -100, 100)) / 100.0
 
-        # individual formant strength
-        self.formant_strength_f1 = float(self.flags.get('fsta', self.formant_strength_global * 100)) / 100.0
-        self.formant_strength_f2 = float(self.flags.get('fstb', self.formant_strength_global * 100)) / 100.0
-        self.formant_strength_f3 = float(self.flags.get('fstc', self.formant_strength_global * 100)) / 100.0
-        self.formant_strength_f4 = float(self.flags.get('fstd', self.formant_strength_global * 100)) / 100.0
+        fsta_val = next((v for k, v in self.flags.items() if k.lower() == 'fsta'), 0) or 0
+        fstb_val = next((v for k, v in self.flags.items() if k.lower() == 'fstb'), 0) or 0
+        fstc_val = next((v for k, v in self.flags.items() if k.lower() == 'fstc'), 0) or 0
+        fstd_val = next((v for k, v in self.flags.items() if k.lower() == 'fstd'), 0) or 0
+
+        self.formant_strength_f1 = float(np.clip(self.formant_strength_global + (fsta_val / 100.0), -1.0, 1.0))
+        self.formant_strength_f2 = float(np.clip(self.formant_strength_global + (fstb_val / 100.0), -1.0, 1.0))
+        self.formant_strength_f3 = float(np.clip(self.formant_strength_global + (fstc_val / 100.0), -1.0, 1.0))
+        self.formant_strength_f4 = float(np.clip(self.formant_strength_global + (fstd_val / 100.0), -1.0, 1.0))
+
 
         self.render()
 
@@ -1177,7 +1182,7 @@ def run(server_class=ThreadedHTTPServer, handler_class=RequestHandler, port=8572
     print(f'Starting HTTP server on port {port}...')
     httpd.serve_forever()
 
-version = 'v2.6'
+version = 'v2.6.1'
 help_string = (
     'Usage:\n'
     '  SillySampler.py in.wav out.wav pitch velocity flags\n'
