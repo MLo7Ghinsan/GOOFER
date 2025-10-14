@@ -5,6 +5,7 @@ from socketserver import ThreadingMixIn
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+from numba import njit
 import soundfile as sf
 
 import GOOFER as gf
@@ -111,23 +112,44 @@ def dynamic_butter_filter(signal, f0, sr, cutoff_factor, order=4, btype='lowpass
     else:
         f0_s = f0
 
+    return _dynamic_butter_filter_core(x, f0_s, sr, cutoff_factor, order, btype)
+
+
+@njit(fastmath=True)
+def _dynamic_butter_filter_core(x, f0_s, sr, cutoff_factor, order, btype):
+    n = len(x)
+    if n == 0:
+        return x
+
     floor_lp = 60.0
     floor_hp = 20.0
     ceil_fc = 0.45 * sr
 
-    fc = np.where(f0_s > 0.0, f0_s * float(cutoff_factor), float(cutoff_factor))
+    fc = np.empty(n, dtype=np.float32)
+    for i in range(n):
+        if f0_s[i] > 0.0:
+            fc[i] = f0_s[i] * cutoff_factor
+        else:
+            fc[i] = cutoff_factor
+
     if btype == 'lowpass':
-        fc = np.maximum(fc, floor_lp)
+        for i in range(n):
+            fc[i] = max(fc[i], floor_lp)
     else:
-        fc = np.maximum(fc, floor_hp)
-    fc = np.minimum(fc, ceil_fc).astype(np.float32)
+        for i in range(n):
+            fc[i] = max(fc[i], floor_hp)
+
+    for i in range(n):
+        fc[i] = min(fc[i], ceil_fc)
 
     two_pi = 2.0 * np.pi
+    alpha = np.empty(n, dtype=np.float32)
     if btype == 'lowpass':
-        alpha = (two_pi * fc) / (two_pi * fc + sr)
-    else: # highpass
-        alpha = sr / (two_pi * fc + sr)
-    alpha = alpha.astype(np.float32)
+        for i in range(n):
+            alpha[i] = (two_pi * fc[i]) / (two_pi * fc[i] + sr)
+    else:  # highpass
+        for i in range(n):
+            alpha[i] = sr / (two_pi * fc[i] + sr)
 
     y = x.copy()
     if btype == 'lowpass':
@@ -141,7 +163,7 @@ def dynamic_butter_filter(signal, f0, sr, cutoff_factor, order=4, btype='lowpass
     else:
         for _ in range(max(1, int(order))):
             yp = np.float32(0.0)
-            prev_x = y[0] if n else np.float32(0.0)
+            prev_x = y[0] if n > 0 else np.float32(0.0)
             for i in range(n):
                 a = alpha[i]
                 xp = y[i]

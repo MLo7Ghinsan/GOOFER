@@ -1,4 +1,5 @@
 import numpy as np
+from numba import njit
 import soundfile as sf
 import os
 import parselmouth
@@ -78,19 +79,21 @@ def compress_env_to_knots(env_spec, sr, n_fft, eps=1e-2, K_start=32, K_step=16, 
     n_bins, T = log_env.shape
     freqs = np.fft.rfftfreq(n_fft, 1.0/sr).astype(DCOMPUTE)
 
+    bin_resolution = sr / n_fft
     check_idx = np.linspace(0, T-1, min(256, T), dtype=int)
+    env_check = env[:, check_idx]
 
     best = None
-    K = K_start
-    while K <= K_max:
+    K_values = np.arange(K_start, K_max + 1, K_step)
+    for K in K_values:
         _, hz_knots = make_mel_knots(sr, n_fft, K)
-        bin_idx = np.clip(np.round(hz_knots / (sr / n_fft)).astype(int), 0, n_bins-1)
+        bin_idx = np.clip(np.round(hz_knots / bin_resolution).astype(int), 0, n_bins-1)
         knot_vals_log = log_env[bin_idx, :]
 
         W = precompute_interp_matrix(freqs, hz_knots)
         recon_log = W @ knot_vals_log[:, check_idx]
         rel_err = np.max(
-            np.abs(np.exp(recon_log) - env[:, check_idx]) / (env[:, check_idx] + 1e-8)
+            np.abs(np.exp(recon_log) - env_check) / (env_check + 1e-8)
         )
 
         if rel_err < eps:
@@ -103,12 +106,11 @@ def compress_env_to_knots(env_spec, sr, n_fft, eps=1e-2, K_start=32, K_step=16, 
                 "sr": int(sr),
             }
             break
-        K += K_step
 
     if best is None:
         # fall back to max K
         _, hz_knots = make_mel_knots(sr, n_fft, K_max)
-        bin_idx = np.clip(np.round(hz_knots / (sr / n_fft)).astype(int), 0, n_bins-1)
+        bin_idx = np.clip(np.round(hz_knots / bin_resolution).astype(int), 0, n_bins-1)
         knot_vals_log = log_env[bin_idx, :]
         best = {
             "mode": "knots",
@@ -128,11 +130,12 @@ def decode_env_from_knots(env_pack):
     sr = int(env_pack["sr"])
     n_bins = int(env_pack["n_bins"])
 
-    freqs = np.fft.rfftfreq(n_fft, 1.0/sr).astype(DCOMPUTE)
-    key = (sr, n_fft, len(hz_knots))
-    if key not in _W_CACHE:
-        _W_CACHE[key] = precompute_interp_matrix(freqs, hz_knots).astype(DCOMPUTE)
-    W = _W_CACHE[key]
+    key = (sr, n_fft, hz_knots.shape[0])
+    W = _W_CACHE.get(key)
+    if W is None:
+        freqs = np.fft.rfftfreq(n_fft, 1.0/sr).astype(DCOMPUTE)
+        W = precompute_interp_matrix(freqs, hz_knots).astype(DCOMPUTE)
+        _W_CACHE[key] = W
 
     log_env = W @ knot_vals_log
     env = np.exp(log_env).astype(DCOMPUTE)
@@ -149,62 +152,73 @@ def interp1d(x, y, kind='linear', fill_value='extrapolate'):
 
     x = np.asarray(x)
     y = np.asarray(y)
+
+    if len(x) == 0:
+        raise ValueError("x cannot be empty")
     
+    if len(x) == 1:
+        x0 = x[0]
+        y0 = y[0]
+        
+        def interpolator(x_new):
+            x_new = np.asarray(x_new)
+            
+            if fill_value == 'extrapolate':
+                return np.full_like(x_new, y0, dtype=y.dtype)
+            else:
+                try:
+                    fill_val = float(fill_value)
+                    result = np.full_like(x_new, fill_val)
+                    mask = np.isclose(x_new, x0)
+                    result[mask] = y0
+                    return result
+                except (TypeError, ValueError):
+                    raise ValueError("fill_value must be 'extrapolate' or a number")
+        
+        return interpolator
+
+    slope_left = (y[1] - y[0]) / (x[1] - x[0] + 1e-10)
+    slope_right = (y[-1] - y[-2]) / (x[-1] - x[-2] + 1e-10)
+
     def interpolator(x_new):
         x_new = np.asarray(x_new)
-        y_new = np.zeros_like(x_new, dtype=y.dtype)
         
-        # find indices for interpolation
-        indices = np.searchsorted(x, x_new, side='left')
-        indices = np.clip(indices, 1, len(x) - 1)
-        # identify points within bounds
-        within_bounds = (x_new >= x[0]) & (x_new <= x[-1])
-
-        # linear interpolation for points within bounds
-        if np.any(within_bounds):
-            x0 = x[indices[within_bounds] - 1]
-            x1 = x[indices[within_bounds]]
-            y0 = y[indices[within_bounds] - 1]
-            y1 = y[indices[within_bounds]]
-            # we hate division by zero
-            denom = x1 - x0
-            denom = np.where(denom == 0, 1e-10, denom)
-            # linear interpolation
-            slope = (y1 - y0) / denom
-            y_new[within_bounds] = y0 + slope * (x_new[within_bounds] - x0)
-        
-        # handle points outside bounds based on fill_value
         if fill_value != 'extrapolate':
-            # if fill_value is a number likr lets say 0), set out-of-bounds values to it
             try:
                 fill_val = float(fill_value)
+
+                within_bounds = (x_new >= x[0]) & (x_new <= x[-1])
+                y_new = np.empty_like(x_new)
+                
+                if np.any(within_bounds):
+                    y_new[within_bounds] = np.interp(x_new[within_bounds], x, y)
+                
                 y_new[~within_bounds] = fill_val
+                return y_new
+                
             except (TypeError, ValueError):
                 raise ValueError("fill_value must be 'extrapolate' or a number")
-        else:
-            # extrapolate for points outside bounds
-            # left side: use slope from first two points
-            left_mask = x_new < x[0]
-            if np.any(left_mask):
-                slope_left = (y[1] - y[0]) / (x[1] - x[0] + 1e-10)
-                y_new[left_mask] = y[0] + slope_left * (x_new[left_mask] - x[0])
-            # right side: use slope from last two points
-            right_mask = x_new > x[-1]
-            if np.any(right_mask):
-                slope_right = (y[-1] - y[-2]) / (x[-1] - x[-2] + 1e-10)
-                y_new[right_mask] = y[-1] + slope_right * (x_new[right_mask] - x[-1])
-            # left side, right side- ha wo tsu k ida shi te papa pa
+        
+        within_bounds = (x_new >= x[0]) & (x_new <= x[-1])
+        y_new = np.interp(x_new, x, y)
+        
+        left_mask = x_new < x[0]
+        if np.any(left_mask):
+            y_new[left_mask] = y[0] + slope_left * (x_new[left_mask] - x[0])
+            
+        right_mask = x_new > x[-1]
+        if np.any(right_mask):
+            y_new[right_mask] = y[-1] + slope_right * (x_new[right_mask] - x[-1])
+            
         return y_new
+
     return interpolator
 
 def gaussian_filter1d(input_array, sigma, axis=-1, truncate=4.0):
     arr = np.asarray(input_array)
-    if arr.size == 0 or arr.shape[axis] == 0:
+    if arr.size == 0 or arr.shape[axis] == 0 or sigma <= 0.0:
         return arr.copy()
-    # clamp to something reasonable
-    sigma = float(sigma)
-    if sigma <= 0.0:
-        return arr.copy()
+
     # calculate kernel
     radius = int(truncate * sigma + 0.5)
     if radius <= 0:
@@ -331,42 +345,67 @@ def stft(x, n_fft=2048, hop_length=512, window=None):
     frames *= window[:, None]
     return np.fft.rfft(frames, axis=0)
 
+@njit
+def _overlap_add(frames, window, hop_length, expected_len):
+    n_frames = frames.shape[1]
+    n_fft = frames.shape[0]
+    y = np.zeros(expected_len, dtype=np.float32)
+    win_sum = np.zeros(expected_len, dtype=np.float32)
+    
+    for i in range(n_frames):
+        start = i * hop_length
+        for j in range(n_fft):
+            idx = start + j
+            val = frames[j, i] * window[j]
+            y[idx] += val
+            win_sum[idx] += window[j] * window[j]
+    
+    for i in range(expected_len):
+        if win_sum[i] > 1e-9:
+            y[i] /= win_sum[i]
+    return y
+
 def istft(S, hop_length=512, window=None, length=None):
     n_fft = (S.shape[0] - 1) * 2
     if window is None:
-        window = np.hanning(n_fft) ** 0.5
-    frames = np.fft.irfft(S, axis=0, n=n_fft)
+        window = np.hanning(n_fft).astype(np.float32) ** 0.5
+    else:
+        window = np.asarray(window, dtype=np.float32)
+    
+    S = np.asarray(S, dtype=np.complex64)
+    frames = np.fft.irfft(S, axis=0, n=n_fft).astype(np.float32)
+    
     pad = n_fft // 2
     expected_len = n_fft + hop_length * (frames.shape[1] - 1)
-    y = np.zeros(expected_len, dtype=np.float32)
-    win_sum = np.zeros(expected_len, dtype=np.float32)
-    for i in range(frames.shape[1]):
-        start = i * hop_length
-        sl = slice(start, start + n_fft)
-        y[sl] += frames[:, i] * window
-        win_sum[sl] += window**2
-    nonzero = win_sum > 1e-9
-    y[nonzero] /= win_sum[nonzero]
+    
+    y = _overlap_add(frames, window, hop_length, expected_len)
     y = y[pad: expected_len - pad]
+    
     if length is not None:
-        if len(y) < length:
-            y = np.pad(y, (0, length - len(y)))
+        if y.shape[0] < length:
+            y = np.pad(y, (0, length - y.shape[0]), mode='constant')
         else:
             y = y[:length]
     return y
 
+@njit
 def fix_f0_gaps(f0_array, max_gap=4):
     f0_fixed = f0_array.copy()
     i = 0
-    while i < len(f0_fixed):
-        if f0_fixed[i] == 0:
+    n = len(f0_fixed)
+    while i < n:
+        if f0_fixed[i] == 0.0:
             start = i
-            while i < len(f0_fixed) and f0_fixed[i] == 0:
+            while i < n and f0_fixed[i] == 0.0:
                 i += 1
             end = i
-            if start > 0 and end < len(f0_fixed) and (end - start) <= max_gap:
-                interp = np.linspace(f0_fixed[start - 1], f0_fixed[end], end - start + 2)[1:-1]
-                f0_fixed[start:end] = interp
+            gap_len = end - start
+            if start > 0 and end < n and gap_len <= max_gap:
+                left_val = f0_fixed[start - 1]
+                right_val = f0_fixed[end]
+                for j in range(gap_len):
+                    ratio = (j + 1) / (gap_len + 1)
+                    f0_fixed[start + j] = left_val * (1 - ratio) + right_val * ratio
         else:
             i += 1
     return f0_fixed
@@ -377,7 +416,7 @@ def lf_model_pulse(T, Ra=0.01, Rg=1.47, Rk=0.34, sr=44100, smoothing=False):
     T0_samples = int(round(sr * T)) # amount of samples for one period
     if T0_samples <= 3:  # just defining a minimum amount of pulses
         T0_samples = 3
-    t = np.linspace(0, T, T0_samples, endpoint=False)
+    t = np.linspace(0, T, T0_samples, endpoint=False, dtype=np.float32)
     
     # LF model parameters (normalized to period T)
     Ta = Ra * T  # open phase
@@ -387,25 +426,25 @@ def lf_model_pulse(T, Ra=0.01, Rg=1.47, Rk=0.34, sr=44100, smoothing=False):
     Tp = Ta  # peak time (end of opening phase)
     Tc = Tp + Rk * (Te - Tp)  # return phase
 
-    pulse = np.zeros(T0_samples) # pulse init
-    for i in range(T0_samples): # pulse shape
-        ti = t[i]
-        if ti < Tp:
-            # open phase rise
-            pulse[i] = np.sin(np.pi * ti / (2 * Tp)) ** 2
-        elif ti < Tc:
-            # return phase decay
-            tau = (ti - Tp) / (Tc - Tp)
-            pulse[i] = np.exp(-Rg * tau) * np.cos(np.pi * tau / 2)
-        else:
-            pulse[i] = 0.0 # closed phase zeroing
+    pulse = np.zeros(T0_samples, dtype=np.float32)
+
+    mask1 = t < Tp # open phase rise
+    if np.any(mask1):
+        pulse[mask1] = np.sin(np.pi * t[mask1] / (2 * Tp)) ** 2
+
+    mask2 = (t >= Tp) & (t < Tc) # return phase decay
+    if np.any(mask2):
+        tau = (t[mask2] - Tp) / (Tc - Tp)
+        pulse[mask2] = np.exp(-Rg * tau) * np.cos(np.pi * tau / 2)
 
     if smoothing:
-        pulse = _smooth_arx_pulse(pulse, T0_samples) # smoothing
+        pulse = _smooth_arx_pulse(pulse, T0_samples)
+
     max_val = np.max(np.abs(pulse))
     if max_val > 0:
-        pulse = pulse / max_val # normalised
-    return pulse.astype(np.float32)
+        pulse /= max_val
+
+    return pulse
 
 def smooth_mask_ds(mask, sigma=100, ds=4):
     if ds > 1:
@@ -523,49 +562,72 @@ def apply_f0_jitter(f0_array, sr, speed=40.0, strength=0.04, seed=None):
     jitter = 1.0 + noise * strength
     return jitter
 
-def add_subharms(f0_interp, sr, subharm_weight=0.5, subharm_semitones=-12, voicing_mask=None):
-    sub_pulse = np.zeros_like(f0_interp)
-    phase = 0.0
-    last_f0 = 160.0  # fallback
-    pulse_cache = {}
-    phase_tracker = {}
+@njit
+def _detect_pulse_events(f0_interp, sr, subharm_semitones, voicing_mask, last_f0_init=160.0):
+    n = len(f0_interp)
+    last_f0 = last_f0_init
+    ratios = np.empty(len(subharm_semitones), dtype=np.float64)
+    for idx in range(len(subharm_semitones)):
+        ratios[idx] = 2.0 ** (subharm_semitones[idx] / 12.0)
 
-    if voicing_mask is None:
-        voicing_mask = (f0_interp > 0)
+    phase_tracker = np.zeros(len(ratios), dtype=np.float64)
+    events = []
 
-    if not isinstance(subharm_semitones, (list, tuple, np.ndarray)):
-        subharm_semitones = [subharm_semitones]
-
-    ratios = [2 ** (semitone / 12.0) for semitone in subharm_semitones]
-
-    for r in ratios:
-        phase_tracker[r] = 0.0
-
-    for i in range(len(f0_interp)):
+    for i in range(n):
         f0 = f0_interp[i]
         if voicing_mask[i] <= 0 or f0 <= 0:
             continue
         last_f0 = f0
-        for ratio in ratios:
+
+        for j in range(len(ratios)):
+            ratio = ratios[j]
             sub_f0 = last_f0 * ratio
             if sub_f0 < 1e-2:
                 continue
-            T = 1.0 / sub_f0
-            phase_tracker[ratio] += sub_f0 / sr
+            phase_tracker[j] += sub_f0 / sr
+            if phase_tracker[j] >= 1.0:
+                events.append((i, sub_f0, ratio))
+                phase_tracker[j] -= 1.0
 
-            if phase_tracker[ratio] >= 1.0:
-                key = f'{sub_f0:.2f}_sub{ratio:.3f}'
-                if key not in pulse_cache:
-                    pulse_cache[key] = lf_model_pulse(T, Ra=0.02, Rg=1.7, Rk=1, sr=sr)
-                lf_pulse = pulse_cache[key]
-                start = i
-                end = min(len(sub_pulse), start + len(lf_pulse))
-                sub_pulse[start:end] += lf_pulse[:end - start]
-                phase_tracker[ratio] -= 1.0
+    return events
+
+def add_subharms(f0_interp, sr, subharm_weight=0.5, subharm_semitones=-12, voicing_mask=None):
+    f0_interp = np.asarray(f0_interp, dtype=np.float64)
+    if voicing_mask is None:
+        voicing_mask = (f0_interp > 0).astype(np.float64)
+    else:
+        voicing_mask = np.asarray(voicing_mask, dtype=np.float64)
+
+    if not isinstance(subharm_semitones, (list, tuple, np.ndarray)):
+        subharm_semitones = [subharm_semitones]
+    subharm_semitones = np.array(subharm_semitones, dtype=np.float64)
+
+    events = _detect_pulse_events(f0_interp, sr, subharm_semitones, voicing_mask)
+
+    sub_pulse = np.zeros_like(f0_interp, dtype=np.float64)
+    pulse_cache = {}
+
+    for i, sub_f0, ratio in events:
+        T = 1.0 / sub_f0
+        cache_key = f'{sub_f0:.2f}_sub{ratio:.3f}'  # (T, Ra, Rg, Rk, sr)
+
+        if cache_key not in pulse_cache:
+            pulse_cache[cache_key] = lf_model_pulse(
+                T, Ra=0.02, Rg=1.7, Rk=1, sr=sr, smoothing=False
+            ).astype(np.float64)
+
+        lf_pulse = pulse_cache[cache_key]
+        start = i
+        end = min(len(sub_pulse), start + len(lf_pulse))
+        sub_pulse[start:end] += lf_pulse[:end - start]
 
     sub_pulse *= voicing_mask
-    sub_pulse /= (np.max(np.abs(sub_pulse)) + 1e-6)
-    return sub_pulse * subharm_weight
+    max_val = np.max(np.abs(sub_pulse))
+    if max_val > 1e-6:
+        sub_pulse /= max_val
+    sub_pulse *= subharm_weight
+
+    return sub_pulse
 
 def add_multiple_subharms(f0_interp, sr, semitone_list=[-12, 12], weights=None, voicing_mask=None):
     if weights is None:
@@ -624,38 +686,89 @@ def extract_formants(y, sr, hop_length, max_formants=5, target_frames=None):
     return formant_tracks
 
 def transpose_formants(formant_tracks, shift_ratios):
+    """
+    old_formant_tracks: dictionary of formant tracks, 
+    where keys are formant numbers and values are arrays of formant values
+    """
     transposed = {}
     for i, track in formant_tracks.items():
         ratio = shift_ratios.get(i, 1.0)
         transposed[i] = np.array(track) * ratio
     return transposed
 
+def transpose_formants_array(formant_array, shift_ratios):
+    """
+    formant_array: (4, T) array, where row 0=F1, 1=F2, 2=F3, 3=F4
+    shift_ratios: list or array of 4 ratios [r1, r2, r3, r4]
+    Returns: (4, T) array, transposed formants
+    """
+    shift_ratios = np.asarray(shift_ratios, dtype=np.float64)  # shape (4,)
+    return formant_array * shift_ratios[:, None]  # broadcasting: (4,1) * (4,T)
+
+@njit
+def _interp_warp_env_by_formants(x, y, x_new):
+
+    x = np.asarray(x)
+    y = np.asarray(y)
+
+
+    slope_left = (y[1] - y[0]) / (x[1] - x[0] + 1e-10)
+    slope_right = (y[-1] - y[-2]) / (x[-1] - x[-2] + 1e-10)
+
+
+    x_new = np.asarray(x_new)
+    
+    y_new = np.interp(x_new, x, y)
+    
+    left_mask = x_new < x[0]
+    if np.any(left_mask):
+        y_new[left_mask] = y[0] + slope_left * (x_new[left_mask] - x[0])
+        
+    right_mask = x_new > x[-1]
+    if np.any(right_mask):
+        y_new[right_mask] = y[-1] + slope_right * (x_new[right_mask] - x[-1])
+        
+    return y_new
+   
+@njit
 def warp_env_by_formants(env, orig_formants, shifted_formants, sr):
     n_bins, n_frames = env.shape
-    freqs = np.linspace(0, sr / 2, n_bins)
+    freqs = np.linspace(0.0, sr / 2.0, n_bins)
     warped_env = np.zeros_like(env)
 
+    max_pts = 6
+    src_buf = np.empty(max_pts, dtype=np.float64)
+    dst_buf = np.empty(max_pts, dtype=np.float64)
+
     for t in range(n_frames):
-        freq_map_src = []
-        freq_map_dst = []
+        k = 0
+        src_buf[k] = 0.0
+        dst_buf[k] = 0.0
+        k += 1
 
         for i in range(1, 5):
-            f_orig = orig_formants.get(i, [0]*n_frames)[t]
-            f_shifted = shifted_formants.get(i, [0]*n_frames)[t]
-            if f_orig > 50 and f_orig < sr / 2 and f_shifted > 50:
-                freq_map_src.append(f_orig)
-                freq_map_dst.append(f_shifted)
+            f_orig = orig_formants[i - 1, t]
+            f_shifted = shifted_formants[i - 1, t]
+            if f_orig > 50.0 and f_orig < sr / 2.0 and f_shifted > 50.0:
+                src_buf[k] = f_orig
+                dst_buf[k] = f_shifted
+                k += 1
 
-        freq_map_src = [0.0] + freq_map_src + [sr / 2]
-        freq_map_dst = [0.0] + freq_map_dst + [sr / 2]
+        src_buf[k] = sr / 2.0
+        dst_buf[k] = sr / 2.0
+        k += 1
 
-        warp_func = interp1d(freq_map_dst, freq_map_src, kind='linear', fill_value='extrapolate')
-        warped_freqs = warp_func(freqs)
-        interp_func = interp1d(freqs, env[:, t], kind='linear', fill_value='extrapolate')
-        warped_env[:, t] = interp_func(warped_freqs)
+        src_pts = src_buf[:k]
+        dst_pts = dst_buf[:k]
+
+        warped_freqs = _interp_warp_env_by_formants(dst_pts, src_pts, freqs)
+        env_col = env[:, t]
+        warped_col = _interp_warp_env_by_formants(freqs, env_col, warped_freqs)
+        warped_env[:, t] = warped_col
 
     return warped_env
 
+@njit
 def one_pole_highpass(x, sr, fc):
     if fc <= 0: 
         return np.zeros_like(x)
@@ -777,10 +890,21 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
     n_frames = env_spec.shape[1]
 
+    formants_array = np.stack([
+        np.asarray(formants[i], dtype=np.float64) for i in (1, 2, 3, 4)
+    ], axis=0)  # shape: (4, n_frames)
+
     if any(shift != 1.0 for shift in [F1_shift, F2_shift, F3_shift, F4_shift]):
-        ind_formant_ratios = {1: F1_shift, 2: F2_shift, 3: F3_shift, 4: F4_shift}
-        ind_formant_shifted = transpose_formants(formants, ind_formant_ratios)
-        env_spec = warp_env_by_formants(env_spec, formants, ind_formant_shifted, sr)
+        shift_ratios = [F1_shift, F2_shift, F3_shift, F4_shift]
+        
+        shifted_formants_array = transpose_formants_array(formants_array, shift_ratios)
+        
+        env_spec = warp_env_by_formants(
+            env_spec, 
+            formants_array, 
+            shifted_formants_array, 
+            sr
+        )
 
     if formant_shift != 1.0:
         env_spec = shift_formants(env_spec, formant_shift, sr)
@@ -1055,7 +1179,11 @@ if __name__ == "__main__":
     n_fft = 2048
     hop_length = n_fft // 4
 
-    env_spec, f0_interp, voicing_mask, formants = extract_features(y, sr, n_fft=n_fft, hop_length=hop_length)
+    import time
+    
+    start_time = time.time()
+    
+    env_spec, f0_interp, voicing_mask, formants, env_knots = extract_features(y, sr, n_fft=n_fft, hop_length=hop_length)
 
     reconstruct, harmonic, aper_uv, aper_bre= synthesize(
         env_spec, f0_interp, voicing_mask, y, sr,
@@ -1079,7 +1207,9 @@ if __name__ == "__main__":
         rough_noise_smooth_ms=120.0,
         rough_alpha_slew_ms=120.0
     )
-
+    end_time = time.time()
+    print(f"Time taken: {end_time - start_time} seconds")
+    
     reconstruct_wav = f'{input_name}_reconstruct.wav'
     harmonic_wav = f'{input_name}_harmonic.wav'
     breathiness = f'{input_name}_breathiness.wav'
