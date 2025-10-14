@@ -29,16 +29,20 @@ input_name = os.path.splitext(input_file)[0]
 y, sr = sf.read(input_file)
 if y.ndim > 1:
     y = y.mean(axis=1)
+import time
 
-env_spec, f0_interp, voicing_mask, formants = gf.extract_features(y, sr)
+start_time = time.time()
+env_spec, f0_interp, voicing_mask, formants,_ = gf.extract_features(y, sr)
 
-reconstruct, harmonic, aper_uv, aper_bre= gf.synthesize(
-    env_spec, f0_interp, voicing_mask, y, sr,
-    noise_type=noise_type, stretch_factor=stretch_factor,
-    pitch_shift=pitch_shift, formant_shift=formant_shift,
-    formants=formants, F1_shift=F1, F2_shift=F2, F3_shift=F3, F4_shift=F4,
-    f0_jitter=f0_jitter, volume_jitter=volume_jitter, add_subharm=add_subharm)
-
+for i in range(20):
+    reconstruct, harmonic, aper_uv, aper_bre= gf.synthesize(
+        env_spec, f0_interp, voicing_mask, y, sr,
+        stretch_factor=stretch_factor,
+        pitch_shift=pitch_shift, formant_shift=formant_shift,
+        formants=formants, F1_shift=F1, F2_shift=F2, F3_shift=F3, F4_shift=F4,
+        f0_jitter=f0_jitter, volume_jitter=volume_jitter, add_subharm=add_subharm)
+end_time = time.time()
+print(f"Time taken: {end_time - start_time} seconds")
 reconstruct_wav = f'{input_name}_reconstruct.wav'
 sf.write(reconstruct_wav, reconstruct, sr)
 print(f'Reconstructed audio saved: {reconstruct_wav}')
@@ -57,15 +61,17 @@ if save_feature:
 
     np.savez_compressed(
         f'{input_name}_features.npz',
+        mode=["0"],
         env_spec=env_spec,
         f0_interp=f0_interp,
         voicing_mask=voicing_mask,
         formants=formants,
-        sr=np.array([sr])
+        sr=np.array([sr],),
+        y_len=np.array([len(y)],)
     )
     print(f'Saved feature set: {input_name}_features.npz')
 
-env_spec, f0_interp, voicing_mask, formants, sr = gf.load_features(f"{input_name}_features.npz")
+env_spec, f0_interp, voicing_mask, formants, sr, y_len = gf.load_features(f"{input_name}_features.npz")
 
 offset = 0.5
 cutoff = 1.5
