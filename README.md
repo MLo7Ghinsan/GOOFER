@@ -1,4 +1,7 @@
 # GOOFER (Work in progress)
+
+https://github.com/user-attachments/assets/a1e041ed-69d6-4a1f-9e18-c943b5bcdf60
+
 ___
 # Flag List (SillySampler) | count: 34
 
