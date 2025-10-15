@@ -1083,7 +1083,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
     # Smooth sigmoid mask per frame
     sharpness = 5
-    highpass_mask = 1.0 / (1.0 + np.exp(-(freqs - cutoff) / sharpness))
+    highpass_mask = 1.0 / (1.0 + np.exp(-np.clip((freqs - cutoff) / sharpness, -60, 60)))
 
     if cut_subharm_below_f0:
         S_harm *= highpass_mask
