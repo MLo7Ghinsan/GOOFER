@@ -446,6 +446,89 @@ def lf_model_pulse(T, Ra=0.01, Rg=1.47, Rk=0.34, sr=44100, smoothing=False):
 
     return pulse
 
+@njit(fastmath=True, cache=True)
+def pulse_train_numba(f0_interp, sr, Ra=0.02, Rg=1.7, Rk=0.8):
+    f0 = f0_interp.astype(np.float32)
+    N = f0.size
+    pulse = np.zeros(N, dtype=np.float32)
+
+    total_phase = 0.0
+    next_k = 1.0
+    last_valid_f0 = 160.0
+
+    cache_T0 = np.zeros(5, dtype=np.int64)
+    cache_len = 0
+    cache_bank = np.zeros((5, 8192), dtype=np.float32)
+
+    for i in range(N):
+        f0i = f0[i]
+        if f0i > 1e-6:
+            last_valid_f0 = f0i
+        total_phase += f0i / sr
+
+        while total_phase >= next_k:
+            T = 1.0 / max(last_valid_f0, 1e-6)
+            T0 = int(round(sr * T))
+            if T0 < 3:
+                T0 = 3
+            if T0 > 8192:
+                T0 = 8192
+
+            found = -1
+            for c in range(cache_len):
+                if cache_T0[c] == T0:
+                    found = c
+                    break
+
+            if found == -1:
+                buf = np.zeros(T0, dtype=np.float32)
+                Ta = Ra * T; Te = T; Tp = Ta; Tc = Tp + Rk * (Te - Tp)
+                j = 0
+                while j < T0:
+                    ti = (j * T) / T0
+                    if ti < Tp:
+                        buf[j] = np.sin(np.pi * ti / (2.0 * Tp + 1e-12)) ** 2
+                    elif ti < Tc:
+                        tau = (ti - Tp) / (Tc - Tp + 1e-12)
+                        buf[j] = np.exp(-Rg * tau) * np.cos(np.pi * tau / 2.0)
+                    else:
+                        buf[j] = 0.0
+                    j += 1
+                m = 0.0
+                for j in range(T0):
+                    a = abs(buf[j])
+                    if a > m:
+                        m = a
+                if m > 0.0:
+                    for j in range(T0):
+                        buf[j] /= m
+
+                if cache_len < 5:
+                    cache_T0[cache_len] = T0
+                    for j in range(T0):
+                        cache_bank[cache_len, j] = buf[j]
+                    found = cache_len
+                    cache_len += 1
+                else:
+                    cache_T0[0] = T0
+                    for j in range(T0):
+                        cache_bank[0, j] = buf[j]
+                    found = 0
+
+            T0_used = cache_T0[found]
+            end = i + T0_used
+            if end > N:
+                end = N
+
+            j = i; k = 0
+            while j < end:
+                pulse[j] += cache_bank[found, k]
+                j += 1; k += 1
+
+            next_k += 1.0
+
+    return pulse
+
 def smooth_mask_ds(mask, sigma=100, ds=4):
     if ds > 1:
         short = mask[::ds].astype(np.float32)
@@ -562,7 +645,6 @@ def apply_f0_jitter(f0_array, sr, speed=40.0, strength=0.04, seed=None):
     jitter = 1.0 + noise * strength
     return jitter
 
-@njit
 def _detect_pulse_events(f0_interp, sr, subharm_semitones, voicing_mask, last_f0_init=160.0):
     n = len(f0_interp)
     last_f0 = last_f0_init
@@ -705,7 +787,7 @@ def transpose_formants_array(formant_array, shift_ratios):
     shift_ratios = np.asarray(shift_ratios, dtype=np.float64)  # shape (4,)
     return formant_array * shift_ratios[:, None]  # broadcasting: (4,1) * (4,T)
 
-@njit
+#@njit
 def _interp_warp_env_by_formants(x, y, x_new):
 
     x = np.asarray(x)
@@ -730,7 +812,7 @@ def _interp_warp_env_by_formants(x, y, x_new):
         
     return y_new
    
-@njit
+#@njit
 def warp_env_by_formants(env, orig_formants, shifted_formants, sr):
     n_bins, n_frames = env.shape
     freqs = np.linspace(0.0, sr / 2.0, n_bins)
@@ -964,33 +1046,7 @@ def synthesize(env_spec, f0_interp, voicing_mask,
         f0_interp *= 1.0 + ((f0_jitter - 1.0) * voicing_mask)
 
     # ARX-LF glottal pulse train generator
-    pulse = np.zeros_like(f0_interp, dtype=np.float32)
-    phase = 0.0
-    last_f0 = 160.0
-    pulse_cache = {}
-
-    for i in range(len(f0_interp)):
-        f0 = float(f0_interp[i])
-        if f0 > 0.0:
-            last_f0 = f0
-        phase += f0 / sr
-
-        if phase >= 1.0:
-            T_sec = 1.0 / max(last_f0, 1e-6)
-            T0_samples = int(round(sr * T_sec))
-            key = T0_samples
-
-            # ARX model implemented
-            if key not in pulse_cache:
-                pulse_cache[key] = lf_model_pulse(T_sec, Ra=0.02, Rg=1.7, Rk=0.8, sr=sr).astype(np.float32)
-            lf_pulse = pulse_cache[key]
-
-            start = i
-            end = min(len(pulse), start + len(lf_pulse))
-            if end > start:
-                pulse[start:end] += lf_pulse[:end - start]
-
-            phase -= 1.0
+    pulse = pulse_train_numba(f0_interp.astype(np.float32), sr, Ra=0.02, Rg=1.7, Rk=0.8).astype(np.float32)
 
     if add_subharm:
         f0_for_subharms = f0_interp
@@ -1139,6 +1195,8 @@ def synthesize(env_spec, f0_interp, voicing_mask,
     return reconstruct, harmonic, aper_uv, aper_bre
 
 if __name__ == "__main__":
+
+    _ = pulse_train_numba(np.zeros(16, dtype=np.float32), 44100) #warmup for benchmark
 
     input_file = '_input.wav'
 
