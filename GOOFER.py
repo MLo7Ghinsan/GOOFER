@@ -45,6 +45,30 @@ def get_cached_brightness(sr, n_fft):
         _CACHE[key] = curves
     return curves # (harm_curve, breath_curve)
 
+def formants_to_int_keys(d):
+    out = {}
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if isinstance(k, str) and k.upper().startswith('F'):
+                try:
+                    k = int(k[1:])
+                except Exception:
+                    continue
+            if isinstance(k, int) and 1 <= k <= 4:
+                out[k] = np.asarray(v)
+    for i in (1, 2, 3, 4):
+        if i not in out:
+            out[i] = np.zeros(1, dtype=np.float64)
+    return out
+
+def pad_trim_to_len(x, T):
+    x = np.asarray(x, dtype=np.float64)
+    if x.size < T:
+        if x.size == 0:
+            return np.zeros(T, dtype=np.float64)
+        return np.pad(x, (0, T - x.size), mode='edge')
+    return x[:T]
+
 def to_compute(x): return np.asarray(x, dtype=DCOMPUTE)
 
 def hz_to_mel(hz): return 2595.0 * np.log10(1.0 + hz / 700.0)
@@ -274,7 +298,7 @@ def save_features(path, features, f0_interp, voicing_mask, formants, sr, y_len):
 
                 f0_interp=f0_interp.astype(DSTORAGE),
                 voicing_mask=voicing_mask.astype(DSTORAGE),
-                formants=formants,
+                formants=formants_to_int_keys(formants),
                 sr=np.array([sr], dtype=np.int32),
                 y_len=np.array([y_len], dtype=np.int64),
             )
@@ -286,7 +310,7 @@ def save_features(path, features, f0_interp, voicing_mask, formants, sr, y_len):
                 env_spec=env_spec,
                 f0_interp=f0_interp.astype(DSTORAGE),
                 voicing_mask=voicing_mask.astype(DSTORAGE),
-                formants=formants,
+                formants=formants_to_int_keys(formants),
                 sr=np.array([sr], dtype=np.int32),
                 y_len=np.array([y_len], dtype=np.int64),
                 n_fft=np.array([env_spec.shape[0]*2-2], dtype=np.int32)
@@ -309,7 +333,7 @@ def load_features(path):
         env_spec = to_compute(data["env_spec"])
     f0_interp = to_compute(data["f0_interp"])
     voicing_mask = to_compute(data["voicing_mask"])
-    formants = data["formants"].item()
+    formants = formants_to_int_keys(data["formants"].item())
     sr = int(data["sr"][0])
     y_len = int(data["y_len"][0])
     return env_spec, f0_interp, voicing_mask, formants, sr, y_len
@@ -972,9 +996,10 @@ def synthesize(env_spec, f0_interp, voicing_mask,
 
     n_frames = env_spec.shape[1]
 
-    formants_array = np.stack([
-        np.asarray(formants[i], dtype=np.float64) for i in (1, 2, 3, 4)
-    ], axis=0)  # shape: (4, n_frames)
+    formants = formants_to_int_keys(formants)
+    formants = {i: pad_trim_to_len(formants[i], n_frames) for i in (1, 2, 3, 4)}
+
+    formants_array = np.stack([formants[i] for i in (1, 2, 3, 4)], axis=0)
 
     if any(shift != 1.0 for shift in [F1_shift, F2_shift, F3_shift, F4_shift]):
         shift_ratios = [F1_shift, F2_shift, F3_shift, F4_shift]
