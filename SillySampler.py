@@ -716,13 +716,32 @@ class GooferResampler:
 
         formants_tail_looped = {}
         for k in forms:
-            track = formants_tail[k]
+            track = np.asarray(formants_tail[k], dtype=np.float32)
+
             if self.loop_mode == 'stretch':
-                formants_tail_looped[k] = gf.stretch_feature(np.array(track), desired_tail_frames / len(track)).tolist()
+                if track.size == 0:
+                    formants_tail_looped[k] = np.zeros(desired_tail_frames, dtype=np.float32)
+                else:
+                    factor = desired_tail_frames / float(track.size)
+                    formants_tail_looped[k] = gf.stretch_feature(track, factor, kind='linear').astype(np.float32)
             else:
-                reps = desired_tail_frames // len(track)
-                rem = desired_tail_frames % len(track)
-                formants_tail_looped[k] = (track * reps + track[:rem])
+                if track.size == 0:
+                    formants_tail_looped[k] = np.zeros(desired_tail_frames, dtype=np.float32)
+                else:
+                    reps = desired_tail_frames // track.size
+                    rem  = desired_tail_frames %  track.size
+
+                    if self.loop_mode == 'avg':
+                        loop_tile = (track + track[::-1]) * 0.5
+                        base = np.tile(loop_tile, reps)
+                        if rem > 0:
+                            base = np.concatenate([base, loop_tile[:rem]])
+                        formants_tail_looped[k] = base.astype(np.float32)
+                    else:
+                        base = np.tile(track, reps)
+                        if rem > 0:
+                            base = np.concatenate([base, track[:rem]])
+                        formants_tail_looped[k] = base.astype(np.float32)
 
         formants_new = {
             k: np.concatenate([formants_pre[k], formants_tail_looped[k]])
